@@ -1,0 +1,19 @@
+{
+  "name": "bot-wa-ijin-dokter-v2",
+  "version": "2.1.0",
+  "private": true,
+  "description": "WhatsApp gateway untuk reminder jadwal dokter",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --max-old-space-size=192 server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "qrcode": "^1.5.4",
+    "whatsapp-web.js": "^1.34.7"
+  }
+}

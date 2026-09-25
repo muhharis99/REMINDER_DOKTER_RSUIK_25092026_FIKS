@@ -1,0 +1,6 @@
+node_modules/
+.wwebjs_auth/
+.wwebjs_cache/
+.chat_identity_map.json
+npm-debug.log*
+.env

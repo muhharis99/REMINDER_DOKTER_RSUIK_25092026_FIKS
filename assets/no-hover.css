@@ -1,0 +1,108 @@
+*,
+*::before,
+*::after {
+    transition-property: none !important;
+}
+
+.xbox,
+.card,
+.card-modern,
+.thumbnail,
+.btn,
+.navbar,
+.navbar .nav-link,
+.nav-tabs .nav-link,
+.nav-pills .nav-link,
+.list-group-item,
+.table,
+.table tbody tr,
+.table tbody td,
+.badge,
+.alert,
+.form-control,
+.form-select,
+.input-group,
+.select2-container,
+.select2-selection,
+.select2-dropdown,
+.dropdown-menu,
+.modal-content,
+.swal2-popup,
+.page-link,
+.dt-paging-button,
+footer {
+    transform: none !important;
+    filter: none !important;
+}
+
+.xbox::after,
+.card::after,
+.card-modern::after,
+.xbox:hover::after,
+.card:hover::after,
+.card-modern:hover::after {
+    display: none !important;
+    content: none !important;
+    opacity: 0 !important;
+    box-shadow: none !important;
+}
+
+.xbox:hover,
+.xbox:focus,
+.card:hover,
+.card:focus,
+.card-modern:hover,
+.card-modern:focus,
+.thumbnail:hover,
+.thumbnail:focus,
+.row.g-3 > [class*="col-"] > .card:hover,
+.row.g-4 > [class*="col-"] > .card:hover {
+    z-index: auto !important;
+    transform: none !important;
+    box-shadow: none !important;
+}
+
+.btn:hover,
+.btn:focus,
+.btn:active,
+.navbar .nav-link:hover,
+.navbar .nav-link:focus,
+.nav-tabs .nav-link:hover,
+.nav-tabs .nav-link:focus,
+.nav-pills .nav-link:hover,
+.nav-pills .nav-link:focus,
+.list-group-item:hover,
+.list-group-item:focus,
+.badge:hover,
+.page-link:hover,
+.page-link:focus,
+.dt-paging-button:hover,
+.dt-paging-button:focus {
+    transform: none !important;
+    box-shadow: none !important;
+    filter: none !important;
+}
+
+.table-hover > tbody > tr:hover > * {
+    --bs-table-bg-state: transparent !important;
+    background-color: inherit !important;
+    box-shadow: none !important;
+}
+
+.form-control:hover,
+.form-control:focus,
+.form-select:hover,
+.form-select:focus,
+.select2-container:hover,
+.select2-container:focus,
+.select2-container--focus .select2-selection,
+.select2-container--open .select2-selection {
+    transform: none !important;
+    box-shadow: none !important;
+}
+
+#masterTabs .nav-link:hover,
+#masterTabs .nav-link:focus {
+    transform: none !important;
+    box-shadow: none !important;
+}

@@ -20,6 +20,9 @@ let waState = 'STARTING';
 let qrDataUrl = null;
 let lastError = null;
 let incomingQueueProcessing = false;
+let reconnectTimer = null;
+let reconnectAttempts = 0;
+let initializingWhatsApp = false;
 
 const incomingQueue = new Map();
 const completedIncoming = new Map();
@@ -150,6 +153,64 @@ function rememberIdentity(identityId, phone, doctorId = '') {
 }
 
 loadIdentityMap();
+
+function clearReconnectTimer() {
+    if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+    }
+}
+
+function scheduleWhatsAppReconnect(reason) {
+    if (reconnectTimer || initializingWhatsApp || waState === 'READY') {
+        return;
+    }
+
+    reconnectAttempts++;
+    const delay = Math.min(
+        30000,
+        Math.max(5000, reconnectAttempts * 5000)
+    );
+
+    waState = 'RECONNECTING';
+    lastError = String(reason || 'WhatsApp terputus');
+
+    console.warn(
+        `WhatsApp akan mencoba reconnect dalam ${Math.ceil(delay / 1000)} detik. Percobaan #${reconnectAttempts}`
+    );
+
+    reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+
+        initializeWhatsApp('reconnect').catch((error) => {
+            console.error('Reconnect WhatsApp gagal:', error);
+            scheduleWhatsAppReconnect(error.message || 'Reconnect gagal');
+        });
+    }, delay);
+}
+
+async function initializeWhatsApp(reason = 'startup') {
+    if (initializingWhatsApp) {
+        return;
+    }
+
+    clearReconnectTimer();
+    initializingWhatsApp = true;
+    waState = reason === 'reconnect' ? 'RECONNECTING' : 'STARTING';
+
+    try {
+        await client.initialize();
+        reconnectAttempts = 0;
+        lastError = null;
+    } catch (error) {
+        waState = 'ERROR';
+        lastError = error.message || String(error);
+        console.error('Gagal menginisialisasi WhatsApp:', error);
+        throw error;
+    } finally {
+        initializingWhatsApp = false;
+    }
+}
 
 function now() {
     return timeFormatter.format(new Date());
@@ -583,6 +644,8 @@ client.on('ready', () => {
     waState = 'READY';
     qrDataUrl = null;
     lastError = null;
+    reconnectAttempts = 0;
+    clearReconnectTimer();
     console.log('WhatsApp gateway READY.');
 });
 
@@ -597,6 +660,8 @@ client.on('disconnected', (reason) => {
     qrDataUrl = null;
     lastError = String(reason || 'Disconnected');
     console.warn('WhatsApp disconnected:', reason);
+
+    scheduleWhatsAppReconnect(reason || 'WhatsApp disconnected');
 });
 
 client.on('message', (message) => {
@@ -762,8 +827,6 @@ app.listen(PORT, HOST, () => {
     console.log(`WhatsApp gateway berjalan di http://localhost:${PORT}`);
 });
 
-client.initialize().catch((error) => {
-    waState = 'ERROR';
-    lastError = error.message;
-    console.error('Gagal menginisialisasi WhatsApp:', error);
+initializeWhatsApp('startup').catch(() => {
+    scheduleWhatsAppReconnect('Inisialisasi WhatsApp gagal');
 });

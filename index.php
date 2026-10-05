@@ -626,6 +626,36 @@ $encodedFilterQuery = htmlspecialchars($filterQuery, ENT_QUOTES, 'UTF-8');
                     return;
                 }
 
+                try {
+                    const gatewayStatusResponse = await fetch(
+                        gatewayBaseUrl + '/status',
+                        { cache: 'no-store' }
+                    );
+                    const gatewayStatus = await gatewayStatusResponse.json();
+
+                    if (!gatewayStatusResponse.ok || !gatewayStatus.ready) {
+                        await Swal.fire({
+                            icon: 'warning',
+                            title: 'WhatsApp Belum Terhubung',
+                            text:
+                                gatewayStatus.error ||
+                                'WhatsApp Gateway belum READY. Tunggu sampai status WhatsApp Terhubung lalu coba lagi.',
+                            confirmButtonText: 'OK',
+                            confirmButtonColor: '#198754'
+                        });
+                        return;
+                    }
+                } catch (statusError) {
+                    await Swal.fire({
+                        icon: 'error',
+                        title: 'Gateway Tidak Dapat Dihubungi',
+                        text: 'WhatsApp Gateway tidak dapat dihubungi. Pastikan server.js sedang berjalan.',
+                        confirmButtonText: 'OK',
+                        confirmButtonColor: '#dc3545'
+                    });
+                    return;
+                }
+
                 const previewNames = selected
                     .slice(0, 10)
                     .map(function (item) {
@@ -664,6 +694,8 @@ $encodedFilterQuery = htmlspecialchars($filterQuery, ENT_QUOTES, 'UTF-8');
 
                 let successCount = 0;
                 let failedItems = [];
+                let gatewayInterrupted = false;
+                let gatewayInterruptedMessage = '';
 
                 Swal.fire({
                     title: 'Mengirim WhatsApp',
@@ -700,6 +732,14 @@ $encodedFilterQuery = htmlspecialchars($filterQuery, ENT_QUOTES, 'UTF-8');
 
                         const result = await response.json();
 
+                        if (response.status === 503) {
+                            gatewayInterrupted = true;
+                            gatewayInterruptedMessage =
+                                result.message ||
+                                'WhatsApp Gateway terputus saat proses pengiriman.';
+                            break;
+                        }
+
                         if (!response.ok || !result.success) {
                             throw new Error(
                                 result.message || 'Gagal mengirim WhatsApp.'
@@ -731,12 +771,20 @@ $encodedFilterQuery = htmlspecialchars($filterQuery, ENT_QUOTES, 'UTF-8');
                     : '';
 
                 await Swal.fire({
-                    icon: failedItems.length === 0 ? 'success' : 'warning',
-                    title: failedItems.length === 0 ? 'Semua Berhasil' : 'Pengiriman Selesai',
+                    icon: gatewayInterrupted
+                        ? 'warning'
+                        : (failedItems.length === 0 ? 'success' : 'warning'),
+                    title: gatewayInterrupted
+                        ? 'Gateway Terputus'
+                        : (failedItems.length === 0 ? 'Semua Berhasil' : 'Pengiriman Selesai'),
                     html:
                         '<strong>' + successCount + '</strong> dokter berhasil dikirimi reminder.' +
                         (failedItems.length
                             ? '<br><strong>' + failedItems.length + '</strong> dokter gagal.' + failedText
+                            : '') +
+                        (gatewayInterrupted
+                            ? '<br><br><strong>' + gatewayInterruptedMessage + '</strong>' +
+                              '<br>Dokter yang belum diproses tetap dapat dikirim ulang setelah gateway READY.'
                             : ''),
                     confirmButtonText: 'OK',
                     confirmButtonColor: '#198754'
@@ -804,6 +852,17 @@ $encodedFilterQuery = htmlspecialchars($filterQuery, ENT_QUOTES, 'UTF-8');
                         });
 
                         const result = await response.json();
+
+                        if (response.status === 503) {
+                            await Swal.fire({
+                                icon: 'warning',
+                                title: 'WhatsApp Belum Terhubung',
+                                text: result.message || 'WhatsApp Gateway belum READY. Tunggu sampai terhubung lalu kirim ulang.',
+                                confirmButtonText: 'OK',
+                                confirmButtonColor: '#198754'
+                            });
+                            return;
+                        }
 
                         if (!response.ok || !result.success) {
                             throw new Error(result.message || 'Gagal mengirim WhatsApp.');

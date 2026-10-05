@@ -386,7 +386,7 @@ function schedulesFor(string $date): array
     }
 
     $statement = get_db('rsi_byl')->prepare("
-        SELECT
+        SELECT DISTINCT
             djk.hari,
             djk.tanggal,
             dj.id AS jadwal_id,
@@ -428,9 +428,6 @@ function schedulesFor(string $date): array
                 'CAPD'
             )
             AND UPPER(COALESCE(mp.poli_nama, '')) NOT LIKE '%CAPD%'
-        GROUP BY
-            dj.dokter_kd,
-            dj.poli_kd
         ORDER BY
             dj.jam_mulai,
             dj.jam_selesai,

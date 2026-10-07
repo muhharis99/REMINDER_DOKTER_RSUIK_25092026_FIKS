@@ -1209,52 +1209,75 @@ app.post('/send', async (req, res) => {
             body: message
         });
 
-        const sentMessage = await sendMessageWithTimeout(
-            numberId._serialized,
-            message
-        );
+        let sendReturnedMessage = null;
 
-        let messageId = extractMessageId(sentMessage);
+        /**
+         * Jangan jadikan nilai return sendMessage() sebagai sumber kebenaran.
+         * Pada WA Web build 2.3000.x, pesan bisa benar-benar terkirim dan
+         * menghasilkan message_ack, tetapi objek Message yang dikembalikan
+         * Node adalah undefined karena perubahan internal MsgKey.
+         */
+        try {
+            sendReturnedMessage = await sendMessageWithTimeout(
+                numberId._serialized,
+                message
+            );
 
-        if (!messageId) {
-            const ackResult = await ackWaiter;
-
-            messageId =
-                ackResult.messageId ||
-                extractMessageId(ackResult.message) ||
-                `WA-${Date.now()}`;
-
-            terminalLog('WHATSAPP TERKONFIRMASI VIA MESSAGE_ACK', {
-                Status: 'TERKONFIRMASI',
-                DoctorId: doctorId || '-',
-                Tujuan: phone,
-                MessageId: messageId,
-                Ack: ackResult.ack,
-                AckStatus: ackResult.ackLabel
-            });
+            console.log(
+                `[${now()}] sendMessage() selesai. ReturnedMessage=${Boolean(sendReturnedMessage)} MessageId=${extractMessageId(sendReturnedMessage) || '-'} Ack=${sendReturnedMessage?.ack ?? '-'}`
+            );
+        } catch (sendError) {
+            console.error(
+                'sendMessage() melempar error, tetap menunggu message_ack:',
+                sendError.message || sendError
+            );
         }
 
-        if (!messageId) {
-            throw new Error('WhatsApp tidak mengembalikan Message ID setelah sendMessage().');
-        }
+        const ackResult = await ackWaiter;
 
-        rememberIdentity(sentMessage?.to, phone, doctorId);
-        rememberIdentity(sentMessage?.id?.remote, phone, doctorId);
-        rememberIdentity(sentMessage?._data?.to?._serialized, phone, doctorId);
-        rememberIdentity(sentMessage?._data?.to?.user, phone, doctorId);
+        const messageId =
+            ackResult.messageId ||
+            extractMessageId(ackResult.message) ||
+            extractMessageId(sendReturnedMessage) ||
+            `WA-${Date.now()}`;
 
-        let ack = Number(sentMessage?.ack ?? 0);
+        const ack = Number(ackResult.ack || sendReturnedMessage?.ack || 0);
 
-        if (ack <= 0) {
-            const ackResult = await ackWaiter;
-            ack = ackResult.ack;
-        }
-
-        if (ack <= 0) {
+        if (ack < 1) {
             throw new Error(
                 `Pesan ${messageId} tidak memperoleh ACK server WhatsApp.`
             );
         }
+
+        terminalLog('WHATSAPP TERKONFIRMASI VIA MESSAGE_ACK', {
+            Status: 'TERKONFIRMASI',
+            DoctorId: doctorId || '-',
+            Tujuan: phone,
+            MessageId: messageId,
+            Ack: ack,
+            AckStatus: ackResult.ackLabel || (ack >= 2 ? 'DELIVERED' : 'SERVER_ACCEPTED')
+        });
+
+        rememberIdentity(
+            sendReturnedMessage?.to,
+            phone,
+            doctorId
+        );
+        rememberIdentity(
+            sendReturnedMessage?.id?.remote,
+            phone,
+            doctorId
+        );
+        rememberIdentity(
+            sendReturnedMessage?._data?.to?._serialized,
+            phone,
+            doctorId
+        );
+        rememberIdentity(
+            sendReturnedMessage?._data?.to?.user,
+            phone,
+            doctorId
+        );
 
         clearOutgoingTrackersFor({
             chatId: numberId._serialized,

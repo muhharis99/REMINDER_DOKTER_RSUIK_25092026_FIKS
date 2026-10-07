@@ -24,9 +24,9 @@ let shutdownInProgress = false;
 
 const pendingOutgoingSends = new Map();
 
-const SEND_TIMEOUT_MS = 10000;
-const ACK_VERIFY_TIMEOUT_MS = 3000;
-const ACK_VERIFY_INTERVAL_MS = 500;
+const SEND_TIMEOUT_MS = 5000;
+const ACK_VERIFY_TIMEOUT_MS = 1500;
+const ACK_VERIFY_INTERVAL_MS = 250;
 
 const timeFormatter = new Intl.DateTimeFormat('id-ID', {
     timeZone: 'Asia/Jakarta',
@@ -596,7 +596,6 @@ async function sendMessageWithTimeout(chatId, content) {
     try {
         return await Promise.race([
             client.sendMessage(chatId, content, {
-                waitUntilMsgSent: true,
                 ignoreQuoteErrors: true,
                 sendSeen: false
             }),
@@ -975,21 +974,30 @@ app.post('/send', async (req, res) => {
             );
         }
 
-        const ackResult = await ackWaiter;
+        let ackResult = null;
+        let ack = Number(sendReturnedMessage?.ack || 0);
+
+        if (ack < 1) {
+            ackResult = await ackWaiter;
+            ack = Number(ackResult.ack || 0);
+        } else {
+            clearOutgoingTrackersFor({
+                chatId: numberId._serialized,
+                phone,
+                body: message
+            });
+        }
 
         const messageId =
-            ackResult.messageId ||
-            extractMessageId(ackResult.message) ||
+            ackResult?.messageId ||
+            extractMessageId(ackResult?.message) ||
             extractMessageId(sendReturnedMessage) ||
             `WA-${Date.now()}`;
-
-        const ack = Number(ackResult.ack || sendReturnedMessage?.ack || 0);
 
         if (ack < 1) {
             throw new Error(
                 `Pesan ${messageId} tidak memperoleh ACK server WhatsApp.`
             );
-        }
 
         terminalLog('WHATSAPP TERKONFIRMASI VIA MESSAGE_ACK', {
             Status: 'TERKONFIRMASI',
@@ -997,7 +1005,7 @@ app.post('/send', async (req, res) => {
             Tujuan: phone,
             MessageId: messageId,
             Ack: ack,
-            AckStatus: ackResult.ackLabel || (ack >= 2 ? 'DELIVERED' : 'SERVER_ACCEPTED')
+            AckStatus: ackResult?.ackLabel || (ack >= 2 ? 'DELIVERED' : 'SERVER_ACCEPTED')
         });
 
         clearOutgoingTrackersFor({

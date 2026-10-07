@@ -11,10 +11,6 @@ const HOST = process.env.WA_HOST || '0.0.0.0';
 const CHAT_INCOMING_URL = process.env.CHAT_INCOMING_URL ||
     'http://127.0.0.1/dokter-reminder/api/chat/incoming.php';
 const CHAT_IDENTITY_FILE = path.join(__dirname, '.chat_identity_map.json');
-const WA_WEB_VERSION = process.env.WA_WEB_VERSION || '2.3000.1044810432-alpha';
-const WA_WEB_VERSION_URL =
-    process.env.WA_WEB_VERSION_URL ||
-    `https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/${WA_WEB_VERSION}.html`;
 
 app.disable('x-powered-by');
 app.use(cors());
@@ -29,6 +25,7 @@ let reconnectAttempts = 0;
 let initializingWhatsApp = false;
 let readyWatchdogTimer = null;
 let authenticatedAt = 0;
+let shutdownInProgress = false;
 
 const incomingQueue = new Map();
 const completedIncoming = new Map();
@@ -54,12 +51,6 @@ const client = new Client({
         clientId: 'dokter-reminder',
         dataPath: './.wwebjs_auth'
     }),
-    webVersion: WA_WEB_VERSION,
-    webVersionCache: {
-        type: 'remote',
-        remotePath: WA_WEB_VERSION_URL,
-        strict: true
-    },
     puppeteer: {
         headless: true,
         args: [
@@ -230,27 +221,11 @@ function scheduleReadyWatchdog() {
         );
 
         console.error(
-            `WhatsApp READY timeout setelah ${elapsedSeconds} detik. WA Web=${WA_WEB_VERSION}. Client akan diinisialisasi ulang dengan sesi LocalAuth yang sama.`
+            `WhatsApp READY timeout setelah ${elapsedSeconds} detik. Tidak membuat browser kedua; gateway menunggu sesi browser yang ada.`
         );
 
-        try {
-            await client.destroy();
-        } catch (error) {
-            console.warn(
-                'Gagal destroy client saat READY watchdog:',
-                error.message || error
-            );
-        }
-
-        waState = 'RECONNECTING';
+        waState = 'ERROR';
         lastError = `READY timeout setelah ${elapsedSeconds} detik`;
-
-        initializeWhatsApp('ready-watchdog').catch((error) => {
-            console.error('Reinitialize dari READY watchdog gagal:', error);
-            scheduleWhatsAppReconnect(
-                error.message || 'READY watchdog gagal'
-            );
-        });
     }, 45000);
 }
 
@@ -261,8 +236,72 @@ function clearReconnectTimer() {
     }
 }
 
+async function waitForBrowserClosed(timeoutMs = 10000) {
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+        const browser = client.pupBrowser;
+
+        if (!browser || browser.connected?.() === false) {
+            return true;
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+
+    return false;
+}
+
+async function safelyRestartWhatsApp(reason) {
+    if (shutdownInProgress || initializingWhatsApp) {
+        return;
+    }
+
+    try {
+        console.warn(
+            'Menyiapkan restart WhatsApp:',
+            reason || 'reconnect'
+        );
+
+        try {
+            await client.destroy();
+        } catch (error) {
+            console.warn(
+                'client.destroy() saat restart:',
+                error.message || error
+            );
+        }
+
+        const closed = await waitForBrowserClosed(10000);
+
+        if (!closed) {
+            console.error(
+                'Browser WhatsApp belum tertutup setelah 10 detik. Tidak akan membuat browser kedua.'
+            );
+            waState = 'ERROR';
+            lastError = 'Browser WhatsApp lama masih aktif. Restart dibatalkan untuk mencegah userDataDir lock.';
+            return;
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+
+        safelyRestartWhatsApp(reason).catch((error) => {
+            console.error('Reconnect WhatsApp gagal:', error);
+            scheduleWhatsAppReconnect(error.message || 'Reconnect gagal');
+        });
+    } catch (error) {
+        console.error('safelyRestartWhatsApp gagal:', error);
+        scheduleWhatsAppReconnect(error.message || 'Restart WhatsApp gagal');
+    }
+}
+
 function scheduleWhatsAppReconnect(reason) {
-    if (reconnectTimer || initializingWhatsApp || waState === 'READY') {
+    if (
+        reconnectTimer ||
+        shutdownInProgress ||
+        initializingWhatsApp ||
+        waState === 'READY'
+    ) {
         return;
     }
 
@@ -977,13 +1016,13 @@ setInterval(() => {
 
 client.on('loading_screen', (percent, message) => {
     console.log(
-        `WhatsApp loading: ${percent}% ${message || ''} | WA Web=${WA_WEB_VERSION}`
+        `WhatsApp loading: ${percent}% ${message || ''}`
     );
 });
 
 client.on('change_state', (state) => {
     console.log(
-        `WhatsApp state berubah: ${state} | WA Web=${WA_WEB_VERSION}`
+        `WhatsApp state berubah: ${state}`
     );
 });
 
@@ -1045,12 +1084,28 @@ client.on('disconnected', (reason) => {
     clearReadyWatchdog();
     authenticatedAt = 0;
 
+    const disconnectReason = String(reason || 'Disconnected');
+
+    console.warn('WhatsApp disconnected:', disconnectReason);
+
+    /**
+     * LOGOUT terjadi pada browser yang sedang berjalan. Jangan membuat
+     * browser/userDataDir kedua karena browser lama belum tentu tertutup.
+     * Biarkan instance yang sama masuk ke alur QR/authentication lagi.
+     */
+    if (disconnectReason.toUpperCase() === 'LOGOUT') {
+        waState = 'AUTHENTICATING';
+        qrDataUrl = null;
+        lastError = 'WhatsApp logout. Menunggu QR/sesi login berikutnya...';
+        clearReconnectTimer();
+        return;
+    }
+
     waState = 'DISCONNECTED';
     qrDataUrl = null;
-    lastError = String(reason || 'Disconnected');
-    console.warn('WhatsApp disconnected:', reason);
+    lastError = disconnectReason;
 
-    scheduleWhatsAppReconnect(reason || 'WhatsApp disconnected');
+    scheduleWhatsAppReconnect(disconnectReason);
 });
 
 client.on('message', (message) => {
@@ -1146,7 +1201,6 @@ app.get('/status', (req, res) => {
         state: waState,
         ready: waState === 'READY',
         authenticatedAt: authenticatedAt || null,
-        waWebVersion: WA_WEB_VERSION,
         hasQr: Boolean(qrDataUrl),
         error: lastError,
         incomingQueue: incomingQueue.size,
@@ -1328,6 +1382,52 @@ app.listen(PORT, HOST, () => {
     console.log(`WhatsApp gateway berjalan di http://localhost:${PORT}`);
 });
 
-initializeWhatsApp('startup').catch(() => {
-    scheduleWhatsAppReconnect('Inisialisasi WhatsApp gagal');
+process.on('SIGINT', async () => {
+    if (shutdownInProgress) {
+        return;
+    }
+
+    shutdownInProgress = true;
+    clearReadyWatchdog();
+    clearReconnectTimer();
+
+    console.log('\nMenghentikan WhatsApp gateway...');
+
+    try {
+        await client.destroy();
+    } catch (error) {
+        console.error(
+            'Gagal menutup WhatsApp saat shutdown:',
+            error.message || error
+        );
+    } finally {
+        process.exit(0);
+    }
+});
+
+process.on('SIGTERM', async () => {
+    if (shutdownInProgress) {
+        return;
+    }
+
+    shutdownInProgress = true;
+    clearReadyWatchdog();
+    clearReconnectTimer();
+
+    try {
+        await client.destroy();
+    } catch (error) {
+        console.error(
+            'Gagal menutup WhatsApp saat shutdown:',
+            error.message || error
+        );
+    } finally {
+        process.exit(0);
+    }
+});
+
+initializeWhatsApp('startup').catch((error) => {
+    scheduleWhatsAppReconnect(
+        error?.message || 'Inisialisasi WhatsApp gagal'
+    );
 });

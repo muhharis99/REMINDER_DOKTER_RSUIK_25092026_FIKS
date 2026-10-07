@@ -9,7 +9,7 @@ const app = express();
 const PORT = Number(process.env.WA_PORT || 3210);
 const HOST = process.env.WA_HOST || '0.0.0.0';
 const CHAT_INCOMING_URL = process.env.CHAT_INCOMING_URL ||
-    `http://127.0.0.1:${process.env.PHP_PORT || 80}/wa_rsuik/api/chat/incoming.php`;
+    `http://127.0.0.1:${process.env.PHP_PORT || 8049}/wa_rsuik/api/chat/incoming.php`;
 const CHAT_IDENTITY_FILE = path.join(__dirname, '.chat_identity_map.json');
 
 app.disable('x-powered-by');
@@ -928,6 +928,52 @@ function sendMatchScore(pending, message) {
     return score;
 }
 
+function captureOutgoingMessage(message) {
+    if (!message || !isOutgoingMessage(message)) {
+        return;
+    }
+
+    const messageId = extractMessageId(message);
+    const body = String(
+        message?.body ||
+        message?._data?.body ||
+        ''
+    ).trim();
+
+    if (!messageId || body === '') {
+        return;
+    }
+
+    let candidate = null;
+
+    for (const [token, tracker] of pendingOutgoingSends.entries()) {
+        if (Date.now() - tracker.createdAt > SEND_TIMEOUT_MS) {
+            continue;
+        }
+
+        if (tracker.body !== body) {
+            continue;
+        }
+
+        if (!candidate || tracker.createdAt > candidate.tracker.createdAt) {
+            candidate = {
+                token,
+                tracker
+            };
+        }
+    }
+
+    if (!candidate) {
+        return;
+    }
+
+    candidate.tracker.messageId = messageId;
+
+    console.log(
+        `[${now()}] OUTGOING_MESSAGE_CREATE MessageId=${messageId} To=${message?.to || message?._data?.to || '-'}`
+    );
+}
+
 function clearOutgoingTracker(token) {
     const tracker = pendingOutgoingSends.get(token);
 
@@ -1238,6 +1284,7 @@ client.on('message', (message) => {
 
 client.on('message_create', (message) => {
     if (isOutgoingMessage(message)) {
+        captureOutgoingMessage(message);
         return;
     }
 

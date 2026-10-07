@@ -28,6 +28,10 @@ const incomingQueue = new Map();
 const completedIncoming = new Map();
 const contactIdentityMap = new Map();
 
+const SEND_TIMEOUT_MS = 20000;
+const ACK_VERIFY_TIMEOUT_MS = 8000;
+const ACK_VERIFY_INTERVAL_MS = 500;
+
 const timeFormatter = new Intl.DateTimeFormat('id-ID', {
     timeZone: 'Asia/Jakarta',
     year: 'numeric',
@@ -608,6 +612,67 @@ async function processIncomingQueue() {
     }
 }
 
+async function sendMessageWithTimeout(chatId, content) {
+    let timer = null;
+
+    try {
+        return await Promise.race([
+            client.sendMessage(chatId, content, {
+                waitUntilMsgSent: true,
+                ignoreQuoteErrors: true,
+                sendSeen: false
+            }),
+            new Promise((_, reject) => {
+                timer = setTimeout(() => {
+                    reject(new Error(
+                        `Timeout ${SEND_TIMEOUT_MS / 1000} detik: WhatsApp tidak mengonfirmasi hasil pengiriman ke server.`
+                    ));
+                }, SEND_TIMEOUT_MS);
+            })
+        ]);
+    } finally {
+        if (timer) {
+            clearTimeout(timer);
+        }
+    }
+}
+
+async function verifyServerAck(sentMessage) {
+    const deadline = Date.now() + ACK_VERIFY_TIMEOUT_MS;
+
+    while (Date.now() < deadline) {
+        const ack = Number(sentMessage?.ack ?? 0);
+
+        if (ack >= 1) {
+            return ack;
+        }
+
+        if (typeof sentMessage?.reload === 'function') {
+            try {
+                await sentMessage.reload();
+                const reloadedAck = Number(sentMessage?.ack ?? 0);
+
+                if (reloadedAck >= 1) {
+                    return reloadedAck;
+                }
+            } catch (error) {
+                console.warn(
+                    'Gagal refresh status ACK pesan:',
+                    error.message || error
+                );
+            }
+        }
+
+        await new Promise((resolve) => {
+            setTimeout(resolve, ACK_VERIFY_INTERVAL_MS);
+        });
+    }
+
+    throw new Error(
+        `Pesan berhasil dibuat tetapi ACK server WhatsApp tidak diterima dalam ${ACK_VERIFY_TIMEOUT_MS / 1000} detik. Status TIDAK ditandai terkirim untuk mencegah false-positive.`
+    );
+}
+
 setInterval(() => {
     processIncomingQueue();
 }, 2000);
@@ -665,6 +730,10 @@ client.on('disconnected', (reason) => {
 });
 
 client.on('message', (message) => {
+    if (isOutgoingMessage(message)) {
+        return;
+    }
+
     enqueueIncomingMessage(message, 'message').catch((error) => {
         console.error('Gagal memproses event message:', error);
     });
@@ -777,7 +846,7 @@ app.post('/send', async (req, res) => {
         rememberIdentity(numberId._serialized, phone, doctorId);
         rememberIdentity(numberId.user, phone, doctorId);
 
-        const sentMessage = await client.sendMessage(
+        const sentMessage = await sendMessageWithTimeout(
             numberId._serialized,
             message
         );
@@ -796,31 +865,7 @@ app.post('/send', async (req, res) => {
         rememberIdentity(sentMessage?._data?.to?._serialized, phone, doctorId);
         rememberIdentity(sentMessage?._data?.to?.user, phone, doctorId);
 
-        try {
-            const chat = await sentMessage.getChat();
-
-            rememberIdentity(chat?.id?._serialized, phone, doctorId);
-            rememberIdentity(chat?.id?.user, phone, doctorId);
-            rememberIdentity(chat?._data?.id?._serialized, phone, doctorId);
-            rememberIdentity(chat?._data?.id?.user, phone, doctorId);
-
-            try {
-                const contact = await chat.getContact();
-                rememberIdentity(contact?.id?._serialized, phone, doctorId);
-                rememberIdentity(contact?.id?.user, phone, doctorId);
-            } catch (contactError) {
-            }
-        } catch (chatError) {
-            console.warn('Gagal menyimpan mapping chat outgoing:', chatError.message || chatError);
-        }
-
-        const ack = Number(sentMessage?.ack ?? 0);
-
-        if (ack <= 0) {
-            throw new Error(
-                `sendMessage() mengembalikan Message ID ${messageId}, tetapi ACK belum tersedia (ack=${ack}). Status tidak boleh dianggap terkirim.`
-            );
-        }
+        const ack = await verifyServerAck(sentMessage);
 
         terminalLog('WHATSAPP BERHASIL DIKIRIM', {
             Status: 'BERHASIL',
@@ -828,6 +873,7 @@ app.post('/send', async (req, res) => {
             Tujuan: phone,
             MessageId: messageId,
             Ack: ack,
+            AckStatus: ack >= 2 ? 'DELIVERED' : 'SERVER_ACCEPTED',
             Mapping: contactIdentityMap.size
         });
 
@@ -837,7 +883,8 @@ app.post('/send', async (req, res) => {
             phone,
             doctorId,
             messageId,
-            ack
+            ack,
+            ackStatus: ack >= 2 ? 'DELIVERED' : 'SERVER_ACCEPTED'
         });
     } catch (error) {
         terminalLog('WHATSAPP GAGAL DIKIRIM', {

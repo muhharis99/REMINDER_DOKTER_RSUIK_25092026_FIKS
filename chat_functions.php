@@ -188,7 +188,7 @@ function chatGatewayRequest(string $path, array $payload): array
         CURLOPT_POST => true,
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_CONNECTTIMEOUT => 5,
-        CURLOPT_TIMEOUT => 30,
+        CURLOPT_TIMEOUT => 45,
         CURLOPT_HTTPHEADER => [
             'Content-Type: application/json',
             'Accept: application/json'

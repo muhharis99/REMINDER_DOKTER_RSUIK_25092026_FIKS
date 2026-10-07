@@ -331,37 +331,10 @@ $encodedFilterQuery = htmlspecialchars($filterQuery, ENT_QUOTES, 'UTF-8');
             </div>
         <?php endif; ?>
 
-        <div class="d-flex flex-column flex-lg-row justify-content-between align-items-lg-center gap-3 mb-3">
+        <div class="d-flex justify-content-between align-items-center mb-3">
             <div>
                 <h2 class="h5 mb-1">Jadwal Dokter</h2>
                 <p class="text-secondary small mb-0"><?= $totalDoctors ?> dokter · <?= $totalSchedules ?> sesi</p>
-            </div>
-
-            <div class="d-flex flex-wrap align-items-center gap-3">
-                <div class="form-check mb-0">
-                    <input
-                        class="form-check-input"
-                        type="checkbox"
-                        id="selectAllDoctors"
-                        checked
-                    >
-                    <label class="form-check-label fw-semibold" for="selectAllDoctors">
-                        Pilih Semua Dokter
-                    </label>
-                </div>
-
-                <span class="text-secondary small" id="selectedDoctorsSummary">
-                    <?= $totalDoctors ?> dokter dipilih
-                </span>
-
-                <button
-                    type="button"
-                    class="btn btn-success btn-sm"
-                    id="sendSelectedDoctors"
-                    <?= $totalDoctors > 0 ? '' : 'disabled' ?>
-                >
-                    Kirim WhatsApp Terpilih
-                </button>
             </div>
         </div>
 
@@ -393,31 +366,13 @@ $encodedFilterQuery = htmlspecialchars($filterQuery, ENT_QUOTES, 'UTF-8');
                 };
                 ?>
 
-                <?php
-                $hasBulkSendData = $reminder && $phone !== '' && $message !== '';
-                ?>
                 <div class="col-12 col-lg-6">
                     <div class="card shadow-sm border-0 h-100">
                         <div class="card-body d-flex flex-column">
                             <div class="d-flex justify-content-between gap-3 mb-3">
-                                <div class="d-flex gap-3 align-items-start">
-                                    <div class="form-check pt-1">
-                                        <input
-                                            class="form-check-input js-doctor-select"
-                                            type="checkbox"
-                                            value="<?= e((string) ($doctor['doctor_id'] ?? '')) ?>"
-                                            data-phone="<?= e($phone) ?>"
-                                            data-message="<?= e($message) ?>"
-                                            data-reminder-id="<?= (int) ($reminder['id'] ?? 0) ?>"
-                                            data-doctor-name="<?= e($doctor['nama_dokter']) ?>"
-                                            <?= $hasBulkSendData ? 'checked' : 'disabled' ?>
-                                            aria-label="Pilih <?= e($doctor['nama_dokter']) ?>"
-                                        >
-                                    </div>
-                                    <div>
-                                        <h3 class="h5 mb-1"><?= e($doctor['nama_dokter']) ?></h3>
-                                        <div class="text-secondary small"><?= e($phoneRaw ?: '-') ?></div>
-                                    </div>
+                                <div>
+                                    <h3 class="h5 mb-1"><?= e($doctor['nama_dokter']) ?></h3>
+                                    <div class="text-secondary small"><?= e($phoneRaw ?: '-') ?></div>
                                 </div>
                                 <span class="badge <?= e($statusClass) ?> align-self-start"><?= e($status) ?></span>
                             </div>
@@ -532,267 +487,6 @@ $encodedFilterQuery = htmlspecialchars($filterQuery, ENT_QUOTES, 'UTF-8');
             refreshGatewayStatus();
             setInterval(refreshGatewayStatus, 5000);
 
-            const selectAllDoctors = document.getElementById('selectAllDoctors');
-            const selectedDoctorsSummary = document.getElementById('selectedDoctorsSummary');
-            const sendSelectedDoctors = document.getElementById('sendSelectedDoctors');
-
-            function doctorCheckboxes() {
-                return Array.from(document.querySelectorAll('.js-doctor-select'));
-            }
-
-            function updateDoctorSelectionState() {
-                const checkboxes = doctorCheckboxes();
-                const enabledCheckboxes = checkboxes.filter(function (checkbox) {
-                    return !checkbox.disabled;
-                });
-                const checkedCheckboxes = enabledCheckboxes.filter(function (checkbox) {
-                    return checkbox.checked;
-                });
-
-                if (enabledCheckboxes.length === 0) {
-                    selectAllDoctors.checked = false;
-                    selectAllDoctors.indeterminate = false;
-                    selectedDoctorsSummary.textContent = '0 dokter dipilih';
-                    sendSelectedDoctors.disabled = true;
-                    return;
-                }
-
-                selectAllDoctors.checked = checkedCheckboxes.length === enabledCheckboxes.length;
-                selectAllDoctors.indeterminate =
-                    checkedCheckboxes.length > 0 &&
-                    checkedCheckboxes.length < enabledCheckboxes.length;
-
-                selectedDoctorsSummary.textContent =
-                    checkedCheckboxes.length + ' dokter dipilih';
-
-                sendSelectedDoctors.disabled = checkedCheckboxes.length === 0;
-            }
-
-            selectAllDoctors.addEventListener('change', function () {
-                doctorCheckboxes().forEach(function (checkbox) {
-                    if (!checkbox.disabled) {
-                        checkbox.checked = selectAllDoctors.checked;
-                    }
-                });
-
-                updateDoctorSelectionState();
-            });
-
-            doctorCheckboxes().forEach(function (checkbox) {
-                checkbox.addEventListener('change', updateDoctorSelectionState);
-            });
-
-            async function updateReminderStatus(reminderId, action) {
-                if (!reminderId) {
-                    return;
-                }
-
-                const response = await fetch(
-                    'index.php?<?= $encodedFilterQuery ?>' +
-                    '&action=' + encodeURIComponent(action) +
-                    '&id=' + encodeURIComponent(reminderId),
-                    {
-                        method: 'GET',
-                        cache: 'no-store',
-                        redirect: 'follow'
-                    }
-                );
-
-                if (!response.ok) {
-                    throw new Error('Status reminder gagal diperbarui.');
-                }
-            }
-
-            sendSelectedDoctors.addEventListener('click', async function () {
-                const selected = doctorCheckboxes().filter(function (checkbox) {
-                    return !checkbox.disabled && checkbox.checked;
-                }).map(function (checkbox) {
-                    return {
-                        phone: checkbox.dataset.phone || '',
-                        message: checkbox.dataset.message || '',
-                        reminderId: checkbox.dataset.reminderId || '',
-                        doctorName: checkbox.dataset.doctorName || 'dokter'
-                    };
-                });
-
-                if (!selected.length) {
-                    await Swal.fire({
-                        icon: 'warning',
-                        title: 'Belum ada dokter dipilih',
-                        text: 'Centang minimal satu dokter terlebih dahulu.',
-                        confirmButtonText: 'OK',
-                        confirmButtonColor: '#198754'
-                    });
-                    return;
-                }
-
-                try {
-                    const gatewayStatusResponse = await fetch(
-                        gatewayBaseUrl + '/status',
-                        { cache: 'no-store' }
-                    );
-                    const gatewayStatus = await gatewayStatusResponse.json();
-
-                    if (!gatewayStatusResponse.ok || !gatewayStatus.ready) {
-                        await Swal.fire({
-                            icon: 'warning',
-                            title: 'WhatsApp Belum Terhubung',
-                            text:
-                                gatewayStatus.error ||
-                                'WhatsApp Gateway belum READY. Tunggu sampai status WhatsApp Terhubung lalu coba lagi.',
-                            confirmButtonText: 'OK',
-                            confirmButtonColor: '#198754'
-                        });
-                        return;
-                    }
-                } catch (statusError) {
-                    await Swal.fire({
-                        icon: 'error',
-                        title: 'Gateway Tidak Dapat Dihubungi',
-                        text: 'WhatsApp Gateway tidak dapat dihubungi. Pastikan server.js sedang berjalan.',
-                        confirmButtonText: 'OK',
-                        confirmButtonColor: '#dc3545'
-                    });
-                    return;
-                }
-
-                const previewNames = selected
-                    .slice(0, 10)
-                    .map(function (item) {
-                        return '• ' + item.doctorName;
-                    })
-                    .join('<br>');
-
-                const moreText = selected.length > 10
-                    ? '<br>dan ' + (selected.length - 10) + ' dokter lainnya.'
-                    : '';
-
-                const confirmation = await Swal.fire({
-                    icon: 'question',
-                    title: 'Kirim WhatsApp Terpilih?',
-                    html:
-                        'Sebanyak <strong>' + selected.length + ' dokter</strong> akan dikirimi reminder.' +
-                        '<div class="text-start mt-3">' + previewNames + moreText + '</div>',
-                    showCancelButton: true,
-                    confirmButtonText: 'Ya, Kirim Semua',
-                    cancelButtonText: 'Tidak',
-                    confirmButtonColor: '#198754',
-                    cancelButtonColor: '#6c757d',
-                    reverseButtons: true,
-                    focusCancel: true
-                });
-
-                if (!confirmation.isConfirmed) {
-                    return;
-                }
-
-                this.disabled = true;
-                selectAllDoctors.disabled = true;
-                doctorCheckboxes().forEach(function (checkbox) {
-                    checkbox.disabled = true;
-                });
-
-                let successCount = 0;
-                let failedItems = [];
-                let gatewayInterrupted = false;
-                let gatewayInterruptedMessage = '';
-
-                Swal.fire({
-                    title: 'Mengirim WhatsApp',
-                    html: 'Mengirim <strong>0</strong> dari <strong>' + selected.length + '</strong> dokter...',
-                    allowOutsideClick: false,
-                    allowEscapeKey: false,
-                    showConfirmButton: false,
-                    didOpen: function () {
-                        Swal.showLoading();
-                    }
-                });
-
-                for (let index = 0; index < selected.length; index++) {
-                    const item = selected[index];
-
-                    Swal.update({
-                        html:
-                            'Mengirim <strong>' + (index + 1) + '</strong> dari <strong>' +
-                            selected.length + '</strong> dokter...<br><small>' +
-                            item.doctorName + '</small>'
-                    });
-
-                    try {
-                        const response = await fetch(gatewayBaseUrl + '/send', {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json'
-                            },
-                            body: JSON.stringify({
-                                phone: item.phone,
-                                message: item.message
-                            })
-                        });
-
-                        const result = await response.json();
-
-                        if (response.status === 503) {
-                            gatewayInterrupted = true;
-                            gatewayInterruptedMessage =
-                                result.message ||
-                                'WhatsApp Gateway terputus saat proses pengiriman.';
-                            break;
-                        }
-
-                        if (!response.ok || !result.success) {
-                            throw new Error(
-                                result.message || 'Gagal mengirim WhatsApp.'
-                            );
-                        }
-
-                        await updateReminderStatus(item.reminderId, 'sent');
-                        successCount++;
-                    } catch (error) {
-                        failedItems.push({
-                            name: item.doctorName,
-                            reason: error.message || 'Gagal mengirim WhatsApp.'
-                        });
-
-                        try {
-                            await updateReminderStatus(item.reminderId, 'failed');
-                        } catch (statusError) {
-                            console.error(statusError);
-                        }
-                    }
-                }
-
-                const failedText = failedItems.length
-                    ? '<div class="text-start mt-3"><strong>Gagal:</strong><br>' +
-                        failedItems.map(function (item) {
-                            return '• ' + item.name + ' — ' + item.reason;
-                        }).join('<br>') +
-                        '</div>'
-                    : '';
-
-                await Swal.fire({
-                    icon: gatewayInterrupted
-                        ? 'warning'
-                        : (failedItems.length === 0 ? 'success' : 'warning'),
-                    title: gatewayInterrupted
-                        ? 'Gateway Terputus'
-                        : (failedItems.length === 0 ? 'Semua Berhasil' : 'Pengiriman Selesai'),
-                    html:
-                        '<strong>' + successCount + '</strong> dokter berhasil dikirimi reminder.' +
-                        (failedItems.length
-                            ? '<br><strong>' + failedItems.length + '</strong> dokter gagal.' + failedText
-                            : '') +
-                        (gatewayInterrupted
-                            ? '<br><br><strong>' + gatewayInterruptedMessage + '</strong>' +
-                              '<br>Dokter yang belum diproses tetap dapat dikirim ulang setelah gateway READY.'
-                            : ''),
-                    confirmButtonText: 'OK',
-                    confirmButtonColor: '#198754'
-                });
-
-                window.location.reload();
-            });
-
             document.querySelectorAll('.js-whatsapp').forEach(function (button) {
                 button.addEventListener('click', async function () {
                     const phone = this.dataset.phone;
@@ -853,17 +547,6 @@ $encodedFilterQuery = htmlspecialchars($filterQuery, ENT_QUOTES, 'UTF-8');
 
                         const result = await response.json();
 
-                        if (response.status === 503) {
-                            await Swal.fire({
-                                icon: 'warning',
-                                title: 'WhatsApp Belum Terhubung',
-                                text: result.message || 'WhatsApp Gateway belum READY. Tunggu sampai terhubung lalu kirim ulang.',
-                                confirmButtonText: 'OK',
-                                confirmButtonColor: '#198754'
-                            });
-                            return;
-                        }
-
                         if (!response.ok || !result.success) {
                             throw new Error(result.message || 'Gagal mengirim WhatsApp.');
                         }
@@ -893,8 +576,6 @@ $encodedFilterQuery = htmlspecialchars($filterQuery, ENT_QUOTES, 'UTF-8');
                     }
                 });
             });
-
-            updateDoctorSelectionState();
         });
     </script>
 </body>

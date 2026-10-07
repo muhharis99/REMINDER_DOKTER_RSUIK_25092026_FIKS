@@ -24,8 +24,8 @@ let shutdownInProgress = false;
 
 const pendingOutgoingSends = new Map();
 
-const SEND_TIMEOUT_MS = 20000;
-const ACK_VERIFY_TIMEOUT_MS = 8000;
+const SEND_TIMEOUT_MS = 10000;
+const ACK_VERIFY_TIMEOUT_MS = 3000;
 const ACK_VERIFY_INTERVAL_MS = 500;
 
 const timeFormatter = new Intl.DateTimeFormat('id-ID', {
@@ -47,8 +47,8 @@ function resolveChromeExecutable() {
     }
 
     if (process.platform === 'win32') {
-        const programFiles = process.env.ProgramFiles || 'C:Program Files';
-        const programFilesX86 = process.env['ProgramFiles(x86)'] || 'C:Program Files (x86)';
+        const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
+        const programFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
         const localAppData = process.env.LOCALAPPDATA || '';
 
         candidates.push(

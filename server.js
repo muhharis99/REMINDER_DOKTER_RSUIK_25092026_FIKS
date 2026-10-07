@@ -9,7 +9,7 @@ const app = express();
 const PORT = Number(process.env.WA_PORT || 3210);
 const HOST = process.env.WA_HOST || '0.0.0.0';
 const CHAT_INCOMING_URL = process.env.CHAT_INCOMING_URL ||
-    'http://127.0.0.1/dokter-reminder/api/chat/incoming.php';
+    `http://127.0.0.1:${process.env.PHP_PORT || 80}/wa_rsuik/api/chat/incoming.php`;
 const CHAT_IDENTITY_FILE = path.join(__dirname, '.chat_identity_map.json');
 
 app.disable('x-powered-by');
@@ -30,6 +30,7 @@ let shutdownInProgress = false;
 const incomingQueue = new Map();
 const completedIncoming = new Map();
 const contactIdentityMap = new Map();
+const pendingOutgoingSends = new Map();
 
 const SEND_TIMEOUT_MS = 20000;
 const ACK_VERIFY_TIMEOUT_MS = 8000;

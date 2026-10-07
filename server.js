@@ -998,6 +998,7 @@ app.post('/send', async (req, res) => {
             throw new Error(
                 `Pesan ${messageId} tidak memperoleh ACK server WhatsApp.`
             );
+        }
 
         terminalLog('WHATSAPP TERKONFIRMASI VIA MESSAGE_ACK', {
             Status: 'TERKONFIRMASI',

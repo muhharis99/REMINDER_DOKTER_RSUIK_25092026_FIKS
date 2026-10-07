@@ -904,35 +904,38 @@ app.post('/send', async (req, res) => {
     const message = String(req.body.message || '').trim();
 
     terminalLog('PERMINTAAN KIRIM WHATSAPP', {
-        Status: 'MEMPROSES',
+        Status: 'MEMULAI',
         DoctorId: doctorId || '-',
         Tujuan: phone || '-',
         PanjangPesan: message.length
     });
 
+    if (waState !== 'READY') {
+        return res.status(503).json({
+            success: false,
+            queued: false,
+            message: 'WhatsApp belum terhubung. Scan QR terlebih dahulu.',
+            state: waState
+        });
+    }
+
+    if (!phone || !/^62\d{8,15}$/.test(phone)) {
+        return res.status(422).json({
+            success: false,
+            queued: false,
+            message: 'Format nomor WhatsApp tidak valid.'
+        });
+    }
+
+    if (!message) {
+        return res.status(422).json({
+            success: false,
+            queued: false,
+            message: 'Pesan WhatsApp kosong.'
+        });
+    }
+
     try {
-        if (waState !== 'READY') {
-            return res.status(503).json({
-                success: false,
-                message: 'WhatsApp belum terhubung. Scan QR terlebih dahulu.',
-                state: waState
-            });
-        }
-
-        if (!phone || !/^62\d{8,15}$/.test(phone)) {
-            return res.status(422).json({
-                success: false,
-                message: 'Format nomor WhatsApp tidak valid.'
-            });
-        }
-
-        if (!message) {
-            return res.status(422).json({
-                success: false,
-                message: 'Pesan WhatsApp kosong.'
-            });
-        }
-
         await repairWhatsAppWebCompatibility();
 
         const numberId = await client.getNumberId(phone);
@@ -940,6 +943,7 @@ app.post('/send', async (req, res) => {
         if (!numberId) {
             return res.status(404).json({
                 success: false,
+                queued: false,
                 message: 'Nomor tidak terdaftar di WhatsApp.'
             });
         }
@@ -950,105 +954,167 @@ app.post('/send', async (req, res) => {
             body: message
         });
 
-        let sendReturnedMessage = null;
+        /**
+         * FIRE-AND-FORGET:
+         * Jangan menunggu sendMessage() selesai.
+         * Pada WhatsApp Web build tertentu, promise ini dapat memerlukan
+         * beberapa detik walaupun pesan sudah diproses oleh WA.
+         *
+         * message_ack tetap menjadi sumber konfirmasi background.
+         */
+        Promise.resolve()
+            .then(async () => {
+                let sendReturnedMessage = null;
+
+                try {
+                    sendReturnedMessage = await client.sendMessage(
+                        numberId._serialized,
+                        message,
+                        {
+                            ignoreQuoteErrors: true,
+                            sendSeen: false
+                        }
+                    );
+
+                    console.log(
+                        `[${now()}] sendMessage() selesai background. ReturnedMessage=${Boolean(sendReturnedMessage)} MessageId=${extractMessageId(sendReturnedMessage) || '-'} Ack=${sendReturnedMessage?.ack ?? '-'}`
+                    );
+                } catch (sendError) {
+                    console.error(
+                        'sendMessage() background error:',
+                        sendError.message || sendError
+                    );
+
+                    const tracker = Array.from(
+                        pendingOutgoingSends.values()
+                    ).find((item) =>
+                        item.chatId === numberId._serialized &&
+                        item.phone === phone &&
+                        item.body === message
+                    );
+
+                    if (tracker) {
+                        const current = clearOutgoingTracker(tracker.token);
+
+                        if (current) {
+                            current.reject(
+                                new Error(
+                                    sendError.message ||
+                                    'WhatsApp gagal memulai pengiriman.'
+                                )
+                            );
+                        }
+                    }
+
+                    return;
+                }
+
+                const directAck = Number(sendReturnedMessage?.ack || 0);
+
+                if (directAck >= 1) {
+                    clearOutgoingTrackersFor({
+                        chatId: numberId._serialized,
+                        phone,
+                        body: message
+                    });
+
+                    terminalLog('WHATSAPP BERHASIL DIKIRIM', {
+                        Status: 'BERHASIL',
+                        DoctorId: doctorId || '-',
+                        Tujuan: phone,
+                        MessageId:
+                            extractMessageId(sendReturnedMessage) ||
+                            `WA-${Date.now()}`,
+                        Ack: directAck,
+                        AckStatus:
+                            directAck >= 2
+                                ? 'DELIVERED'
+                                : 'SERVER_ACCEPTED'
+                    });
+
+                    return;
+                }
+
+                try {
+                    const ackResult = await ackWaiter;
+                    const ack = Number(ackResult.ack || 0);
+                    const messageId =
+                        ackResult.messageId ||
+                        extractMessageId(ackResult.message) ||
+                        extractMessageId(sendReturnedMessage) ||
+                        `WA-${Date.now()}`;
+
+                    if (ack >= 1) {
+                        terminalLog(
+                            'WHATSAPP TERKONFIRMASI VIA MESSAGE_ACK',
+                            {
+                                Status: 'TERKONFIRMASI',
+                                DoctorId: doctorId || '-',
+                                Tujuan: phone,
+                                MessageId: messageId,
+                                Ack: ack,
+                                AckStatus:
+                                    ackResult.ackLabel ||
+                                    (ack >= 2
+                                        ? 'DELIVERED'
+                                        : 'SERVER_ACCEPTED')
+                            }
+                        );
+
+                        return;
+                    }
+
+                    throw new Error(
+                        `Pesan ${messageId} tidak memperoleh ACK server WhatsApp.`
+                    );
+                } catch (ackError) {
+                    terminalLog('WHATSAPP GAGAL DIKIRIM', {
+                        Status: 'GAGAL_BACKGROUND',
+                        DoctorId: doctorId || '-',
+                        Tujuan: phone || '-',
+                        Alasan:
+                            ackError.message ||
+                            'ACK WhatsApp tidak diterima.'
+                    });
+                }
+            })
+            .catch((backgroundError) => {
+                terminalLog('WHATSAPP GAGAL DIKIRIM', {
+                    Status: 'GAGAL_BACKGROUND',
+                    DoctorId: doctorId || '-',
+                    Tujuan: phone || '-',
+                    Alasan:
+                        backgroundError.message ||
+                        'Pengiriman background gagal.'
+                });
+            });
 
         /**
-         * Jangan jadikan nilai return sendMessage() sebagai sumber kebenaran.
-         * Pada WA Web build 2.3000.x, pesan bisa benar-benar terkirim dan
-         * menghasilkan message_ack, tetapi objek Message yang dikembalikan
-         * Node adalah undefined karena perubahan internal MsgKey.
+         * Respons HTTP langsung supaya tombol 1 nomor tidak menunggu
+         * sendMessage() yang lambat.
          */
-        try {
-            sendReturnedMessage = await sendMessageWithTimeout(
-                numberId._serialized,
-                message
-            );
-
-            console.log(
-                `[${now()}] sendMessage() selesai. ReturnedMessage=${Boolean(sendReturnedMessage)} MessageId=${extractMessageId(sendReturnedMessage) || '-'} Ack=${sendReturnedMessage?.ack ?? '-'}`
-            );
-        } catch (sendError) {
-            console.error(
-                'sendMessage() melempar error, tetap menunggu message_ack:',
-                sendError.message || sendError
-            );
-        }
-
-        let ackResult = null;
-        let ack = Number(sendReturnedMessage?.ack || 0);
-
-        if (ack < 1) {
-            ackResult = await ackWaiter;
-            ack = Number(ackResult.ack || 0);
-        } else {
-            clearOutgoingTrackersFor({
-                chatId: numberId._serialized,
-                phone,
-                body: message
-            });
-        }
-
-        const messageId =
-            ackResult?.messageId ||
-            extractMessageId(ackResult?.message) ||
-            extractMessageId(sendReturnedMessage) ||
-            `WA-${Date.now()}`;
-
-        if (ack < 1) {
-            throw new Error(
-                `Pesan ${messageId} tidak memperoleh ACK server WhatsApp.`
-            );
-        }
-
-        terminalLog('WHATSAPP TERKONFIRMASI VIA MESSAGE_ACK', {
-            Status: 'TERKONFIRMASI',
-            DoctorId: doctorId || '-',
-            Tujuan: phone,
-            MessageId: messageId,
-            Ack: ack,
-            AckStatus: ackResult?.ackLabel || (ack >= 2 ? 'DELIVERED' : 'SERVER_ACCEPTED')
-        });
-
-        clearOutgoingTrackersFor({
-            chatId: numberId._serialized,
-            phone,
-            body: message
-        });
-
-        terminalLog('WHATSAPP BERHASIL DIKIRIM', {
-            Status: 'BERHASIL',
-            DoctorId: doctorId || '-',
-            Tujuan: phone,
-            MessageId: messageId,
-            Ack: ack,
-            AckStatus: ack >= 2 ? 'DELIVERED' : 'SERVER_ACCEPTED',
-        });
-
-        return res.json({
+        return res.status(202).json({
             success: true,
-            message: 'Pesan WhatsApp berhasil dikirim.',
+            queued: true,
+            message:
+                'Permintaan pengiriman WhatsApp sudah diteruskan ke gateway.',
             phone,
-            doctorId,
-            messageId,
-            ack,
-            ackStatus: ack >= 2 ? 'DELIVERED' : 'SERVER_ACCEPTED'
+            doctorId
         });
     } catch (error) {
-        clearOutgoingTrackersFor({
-            phone,
-            body: message
-        });
-
-        terminalLog('WHATSAPP GAGAL DIKIRIM', {
+        terminalLog('WHATSAPP GAGAL MEMULAI KIRIM', {
             Status: 'GAGAL',
             DoctorId: doctorId || '-',
             Tujuan: phone || '-',
-            Alasan: error.message || 'Gagal mengirim WhatsApp'
+            Alasan: error.message || 'Gagal memulai pengiriman WhatsApp'
         });
 
         return res.status(500).json({
             success: false,
-            message: error.message || 'Gagal mengirim WhatsApp.'
+            queued: false,
+            message:
+                error.message ||
+                'Gagal memulai pengiriman WhatsApp.'
         });
     }
 });

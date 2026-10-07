@@ -410,7 +410,10 @@ async function resolveIncomingIdentity(message) {
     const sourceIds = [
         message?.author,
         message?.from,
-        message?.id?.remote
+        message?.id?.remote?._serialized,
+        message?.id?.remote?.$1,
+        message?._data?.id?.remote?._serialized,
+        message?._data?.id?.remote?.$1
     ]
         .map((value) => String(value || '').trim())
         .filter(Boolean);
@@ -535,7 +538,7 @@ async function incomingPayload(message) {
     }
 
     const identity = await resolveIncomingIdentity(message);
-    const messageId = message?.id?._serialized || '';
+    const messageId = extractMessageId(message) || '';
 
     if (!identity || !messageId) {
         return null;
@@ -855,6 +858,30 @@ function clearOutgoingTracker(token) {
     return tracker;
 }
 
+function clearOutgoingTrackersFor({ chatId, phone, body }) {
+    const normalizedChatId = String(chatId || '');
+    const normalizedPhone = normalizePhone(phone);
+    const normalizedBody = String(body || '');
+
+    for (const [token, tracker] of pendingOutgoingSends.entries()) {
+        const sameChat =
+            normalizedChatId !== '' &&
+            tracker.chatId === normalizedChatId;
+
+        const samePhone =
+            normalizedPhone !== '' &&
+            tracker.phone === normalizedPhone;
+
+        const sameBody =
+            normalizedBody !== '' &&
+            tracker.body === normalizedBody;
+
+        if ((sameChat || samePhone) && sameBody) {
+            clearOutgoingTracker(token);
+        }
+    }
+}
+
 function waitForOutgoingAck({ chatId, phone, body, messageId = null }) {
     const token = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
@@ -1162,6 +1189,8 @@ app.post('/send', async (req, res) => {
             });
         }
 
+        await repairWhatsAppWebCompatibility();
+
         const numberId = await client.getNumberId(phone);
 
         if (!numberId) {
@@ -1203,13 +1232,6 @@ app.post('/send', async (req, res) => {
                 Ack: ackResult.ack,
                 AckStatus: ackResult.ackLabel
             });
-        } else {
-            clearOutgoingTracker(
-                Array.from(pendingOutgoingSends.keys()).find(
-                    (token) =>
-                        pendingOutgoingSends.get(token)?.messageId === messageId
-                )
-            );
         }
 
         if (!messageId) {
@@ -1234,6 +1256,12 @@ app.post('/send', async (req, res) => {
             );
         }
 
+        clearOutgoingTrackersFor({
+            chatId: numberId._serialized,
+            phone,
+            body: message
+        });
+
         terminalLog('WHATSAPP BERHASIL DIKIRIM', {
             Status: 'BERHASIL',
             DoctorId: doctorId || '-',
@@ -1254,6 +1282,11 @@ app.post('/send', async (req, res) => {
             ackStatus: ack >= 2 ? 'DELIVERED' : 'SERVER_ACCEPTED'
         });
     } catch (error) {
+        clearOutgoingTrackersFor({
+            phone,
+            body: message
+        });
+
         terminalLog('WHATSAPP GAGAL DIKIRIM', {
             Status: 'GAGAL',
             DoctorId: doctorId || '-',

@@ -671,9 +671,24 @@ client.on('message', (message) => {
 });
 
 client.on('message_create', (message) => {
+    if (isOutgoingMessage(message)) {
+        return;
+    }
+
     enqueueIncomingMessage(message, 'message_create').catch((error) => {
         console.error('Gagal memproses event message_create:', error);
     });
+});
+
+client.on('message_ack', (message, ack) => {
+    const messageId =
+        message?.id?._serialized ||
+        message?._data?.id?._serialized ||
+        '';
+
+    console.log(
+        `[${now()}] MESSAGE_ACK MessageId=${messageId || '-'} Ack=${ack} To=${message?.to || message?._data?.to || '-'}`
+    );
 });
 
 app.get('/', (req, res) => {
@@ -767,7 +782,14 @@ app.post('/send', async (req, res) => {
             message
         );
 
-        const messageId = sentMessage?.id?._serialized || null;
+        const messageId =
+            sentMessage?.id?._serialized ||
+            sentMessage?._data?.id?._serialized ||
+            null;
+
+        if (!messageId) {
+            throw new Error('WhatsApp tidak mengembalikan Message ID setelah sendMessage().');
+        }
 
         rememberIdentity(sentMessage?.to, phone, doctorId);
         rememberIdentity(sentMessage?.id?.remote, phone, doctorId);
@@ -792,12 +814,20 @@ app.post('/send', async (req, res) => {
             console.warn('Gagal menyimpan mapping chat outgoing:', chatError.message || chatError);
         }
 
+        const ack = Number(sentMessage?.ack ?? 0);
+
+        if (ack <= 0) {
+            throw new Error(
+                `sendMessage() mengembalikan Message ID ${messageId}, tetapi ACK belum tersedia (ack=${ack}). Status tidak boleh dianggap terkirim.`
+            );
+        }
+
         terminalLog('WHATSAPP BERHASIL DIKIRIM', {
             Status: 'BERHASIL',
             DoctorId: doctorId || '-',
             Tujuan: phone,
-            MessageId: messageId || '-',
-            Ack: sentMessage?.ack ?? '-',
+            MessageId: messageId,
+            Ack: ack,
             Mapping: contactIdentityMap.size
         });
 
@@ -806,7 +836,8 @@ app.post('/send', async (req, res) => {
             message: 'Pesan WhatsApp berhasil dikirim.',
             phone,
             doctorId,
-            messageId
+            messageId,
+            ack
         });
     } catch (error) {
         terminalLog('WHATSAPP GAGAL DIKIRIM', {

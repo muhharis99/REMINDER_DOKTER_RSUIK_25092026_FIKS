@@ -895,9 +895,7 @@ app.get('/status', (req, res) => {
         ready: waState === 'READY',
         authenticatedAt: authenticatedAt || null,
         hasQr: Boolean(qrDataUrl),
-        error: lastError,
-        incomingQueue: incomingQueue.size,
-        mappedContacts: contactIdentityMap.size
+        error: lastError
     });
 });
 
@@ -1001,27 +999,6 @@ app.post('/send', async (req, res) => {
             Ack: ack,
             AckStatus: ackResult.ackLabel || (ack >= 2 ? 'DELIVERED' : 'SERVER_ACCEPTED')
         });
-
-        rememberIdentity(
-            sendReturnedMessage?.to,
-            phone,
-            doctorId
-        );
-        rememberIdentity(
-            sendReturnedMessage?.id?.remote,
-            phone,
-            doctorId
-        );
-        rememberIdentity(
-            sendReturnedMessage?._data?.to?._serialized,
-            phone,
-            doctorId
-        );
-        rememberIdentity(
-            sendReturnedMessage?._data?.to?.user,
-            phone,
-            doctorId
-        );
 
         clearOutgoingTrackersFor({
             chatId: numberId._serialized,

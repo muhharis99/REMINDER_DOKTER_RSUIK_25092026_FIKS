@@ -46,12 +46,68 @@ const timeFormatter = new Intl.DateTimeFormat('id-ID', {
     hour12: false
 });
 
+function resolveChromeExecutable() {
+    const candidates = [];
+
+    if (process.env.CHROME_EXECUTABLE_PATH) {
+        candidates.push(process.env.CHROME_EXECUTABLE_PATH);
+    }
+
+    if (process.platform === 'win32') {
+        const programFiles = process.env.ProgramFiles || 'C:Program Files';
+        const programFilesX86 = process.env['ProgramFiles(x86)'] || 'C:Program Files (x86)';
+        const localAppData = process.env.LOCALAPPDATA || '';
+
+        candidates.push(
+            path.join(programFiles, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+            path.join(programFilesX86, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+            path.join(localAppData, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+            path.join(programFiles, 'Chromium', 'Application', 'chromium.exe'),
+            path.join(programFiles, 'Chromium', 'Application', 'chrome.exe')
+        );
+    }
+
+    if (process.platform === 'linux') {
+        candidates.push(
+            '/usr/bin/google-chrome',
+            '/usr/bin/google-chrome-stable',
+            '/usr/bin/chromium',
+            '/usr/bin/chromium-browser'
+        );
+    }
+
+    if (process.platform === 'darwin') {
+        candidates.push(
+            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+            '/Applications/Chromium.app/Contents/MacOS/Chromium'
+        );
+    }
+
+    return candidates.find((candidate) => candidate && fs.existsSync(candidate)) || null;
+}
+
+const chromeExecutable = resolveChromeExecutable();
+
+if (chromeExecutable) {
+    console.log('WhatsApp Chrome executable:', chromeExecutable);
+} else {
+    console.warn(
+        'Chrome/Chromium sistem tidak ditemukan. Puppeteer akan memakai browser bawaan jika tersedia.'
+    );
+}
+
 const client = new Client({
     authStrategy: new LocalAuth({
         clientId: 'dokter-reminder',
-        dataPath: './.wwebjs_auth'
+        dataPath: path.join(__dirname, '.wwebjs_auth')
     }),
+    webVersionCache: {
+        type: 'none'
+    },
+    takeoverOnConflict: true,
+    takeoverTimeoutMs: 0,
     puppeteer: {
+        ...(chromeExecutable ? { executablePath: chromeExecutable } : {}),
         headless: true,
         args: [
             '--no-sandbox',
@@ -66,11 +122,10 @@ const client = new Client({
             '--disable-default-apps',
             '--disable-sync',
             '--disable-translate',
-            '--disable-features=Translate,MediaRouter,OptimizationHints,AutofillServerCommunication',
-            '--metrics-recording-only',
-            '--mute-audio',
+            '--disable-features=TranslateUI',
             '--no-first-run',
-            '--no-default-browser-check'
+            '--no-default-browser-check',
+            '--disable-blink-features=AutomationControlled'
         ]
     }
 });
@@ -236,7 +291,45 @@ function clearReconnectTimer() {
     }
 }
 
-async function waitForBrowserClosed(timeoutMs = 10000) {
+function scheduleWhatsAppReconnect(reason) {
+    if (reconnectTimer || shutdownInProgress || initializingWhatsApp) {
+        return;
+    }
+
+    reconnectAttempts++;
+
+    const delay = Math.min(
+        30000,
+        Math.max(3000, reconnectAttempts * 3000)
+    );
+
+    waState = 'RECONNECTING';
+    lastError = String(reason || 'WhatsApp terputus');
+
+    console.warn(
+        `WhatsApp recovery dijadwalkan dalam ${Math.ceil(delay / 1000)} detik. Percobaan #${reconnectAttempts}`
+    );
+
+    reconnectTimer = setTimeout(async () => {
+        reconnectTimer = null;
+
+        if (shutdownInProgress || initializingWhatsApp) {
+            return;
+        }
+
+        try {
+            await safelyRestartWhatsApp(reason);
+        } catch (error) {
+            console.error('Recovery WhatsApp gagal:', error);
+            waState = 'ERROR';
+            lastError = error.message || String(error);
+        }
+    }, delay);
+
+    reconnectTimer.unref?.();
+}
+
+async function waitForBrowserClosed(timeoutMs = 15000) {
     const startedAt = Date.now();
 
     while (Date.now() - startedAt < timeoutMs) {
@@ -252,95 +345,48 @@ async function waitForBrowserClosed(timeoutMs = 10000) {
     return false;
 }
 
-async function safelyRestartWhatsApp(reason) {
+async function safelyRestartWhatsApp(reason = '') {
     if (shutdownInProgress || initializingWhatsApp) {
         return;
     }
 
+    console.warn('Menjalankan recovery WhatsApp:', reason || 'unknown');
+
     try {
-        console.warn(
-            'Menyiapkan restart WhatsApp:',
-            reason || 'reconnect'
-        );
-
-        try {
-            await client.destroy();
-        } catch (error) {
-            console.warn(
-                'client.destroy() saat restart:',
-                error.message || error
-            );
-        }
-
-        const closed = await waitForBrowserClosed(10000);
-
-        if (!closed) {
-            console.error(
-                'Browser WhatsApp belum tertutup setelah 10 detik. Tidak akan membuat browser kedua.'
-            );
-            waState = 'ERROR';
-            lastError = 'Browser WhatsApp lama masih aktif. Restart dibatalkan untuk mencegah userDataDir lock.';
-            return;
-        }
-
-        await new Promise((resolve) => setTimeout(resolve, 1500));
-
-        initializeWhatsApp('reconnect').catch((error) => {
-            console.error('Reconnect WhatsApp gagal:', error);
-            scheduleWhatsAppReconnect(error.message || 'Reconnect gagal');
-        });
+        await client.destroy();
     } catch (error) {
-        console.error('safelyRestartWhatsApp gagal:', error);
-        scheduleWhatsAppReconnect(error.message || 'Restart WhatsApp gagal');
-    }
-}
-
-function scheduleWhatsAppReconnect(reason) {
-    if (
-        reconnectTimer ||
-        shutdownInProgress ||
-        initializingWhatsApp ||
-        waState === 'READY'
-    ) {
-        return;
+        console.warn(
+            'client.destroy() saat recovery:',
+            error.message || error
+        );
     }
 
-    reconnectAttempts++;
-    const delay = Math.min(
-        30000,
-        Math.max(5000, reconnectAttempts * 5000)
-    );
+    const closed = await waitForBrowserClosed();
 
-    waState = 'RECONNECTING';
-    lastError = String(reason || 'WhatsApp terputus');
+    if (!closed) {
+        throw new Error(
+            'Browser WhatsApp lama belum tertutup. Recovery dihentikan agar tidak membuat userDataDir kedua.'
+        );
+    }
 
-    console.warn(
-        `WhatsApp akan mencoba reconnect dalam ${Math.ceil(delay / 1000)} detik. Percobaan #${reconnectAttempts}`
-    );
+    await new Promise((resolve) => setTimeout(resolve, 2000));
 
-    reconnectTimer = setTimeout(() => {
-        reconnectTimer = null;
-
-        safelyRestartWhatsApp(reason).catch((error) => {
-            console.error('Reconnect WhatsApp gagal:', error);
-            scheduleWhatsAppReconnect(error.message || 'Reconnect gagal');
-        });
-    }, delay);
+    await initializeWhatsApp('recovery');
 }
+
 
 async function initializeWhatsApp(reason = 'startup') {
-    if (initializingWhatsApp) {
+    if (initializingWhatsApp || shutdownInProgress) {
         return;
     }
 
     clearReconnectTimer();
     initializingWhatsApp = true;
-    waState = reason === 'reconnect' ? 'RECONNECTING' : 'STARTING';
+    waState = reason === 'recovery' ? 'RECONNECTING' : 'STARTING';
+    lastError = null;
 
     try {
         await client.initialize();
-        reconnectAttempts = 0;
-        lastError = null;
     } catch (error) {
         waState = 'ERROR';
         lastError = error.message || String(error);
@@ -350,6 +396,7 @@ async function initializeWhatsApp(reason = 'startup') {
         initializingWhatsApp = false;
     }
 }
+
 
 function now() {
     return timeFormatter.format(new Date());
@@ -1014,6 +1061,64 @@ setInterval(() => {
     processIncomingQueue();
 }, 2000);
 
+async function watchAuthenticatedReady() {
+    const startedAt = Date.now();
+    const timeoutMs = 90000;
+
+    const probe = async () => {
+        if (waState === 'READY' || shutdownInProgress) {
+            return;
+        }
+
+        try {
+            const state = await client.getState();
+
+            console.log(
+                `WhatsApp connection state: ${state}`
+            );
+
+            if (state === 'CONNECTED') {
+                clearReadyWatchdog();
+                authenticatedAt = 0;
+                waState = 'READY';
+                qrDataUrl = null;
+                lastError = null;
+
+                await repairWhatsAppWebCompatibility();
+
+                reconnectAttempts = 0;
+                clearReconnectTimer();
+
+                console.log(
+                    'WhatsApp gateway READY (promoted from getState CONNECTED).'
+                );
+
+                return;
+            }
+
+            if (state === 'CONFLICT') {
+                lastError = 'WhatsApp session conflict';
+                console.warn('WhatsApp session conflict detected.');
+            }
+        } catch (error) {
+            lastError = error.message || String(error);
+        }
+
+        if (Date.now() - startedAt >= timeoutMs) {
+            lastError =
+                'WhatsApp sudah authenticated tetapi tidak mencapai CONNECTED dalam 90 detik.';
+            waState = 'ERROR';
+
+            console.error(lastError);
+            return;
+        }
+
+        setTimeout(probe, 2000).unref?.();
+    };
+
+    setTimeout(probe, 1500).unref?.();
+}
+
 client.on('loading_screen', (percent, message) => {
     console.log(
         `WhatsApp loading: ${percent}% ${message || ''}`
@@ -1021,9 +1126,30 @@ client.on('loading_screen', (percent, message) => {
 });
 
 client.on('change_state', (state) => {
-    console.log(
-        `WhatsApp state berubah: ${state}`
-    );
+    console.log(`WhatsApp state berubah: ${state}`);
+
+    if (state === 'CONNECTED') {
+        clearReadyWatchdog();
+        authenticatedAt = 0;
+        waState = 'READY';
+        qrDataUrl = null;
+        lastError = null;
+        reconnectAttempts = 0;
+        clearReconnectTimer();
+
+        repairWhatsAppWebCompatibility().catch((error) => {
+            console.warn(
+                'Gagal memasang WA Web compatibility saat CONNECTED:',
+                error.message || error
+            );
+        });
+
+        console.log('WhatsApp gateway READY (change_state=CONNECTED).');
+    } else if (['DISCONNECTED', 'UNPAIRED', 'UNPAIRED_IDLE'].includes(state)) {
+        if (waState !== 'STARTING' && waState !== 'RECONNECTING') {
+            waState = 'DISCONNECTED';
+        }
+    }
 });
 
 client.on('qr', async (qr) => {
@@ -1054,10 +1180,11 @@ client.on('authenticated', () => {
     authenticatedAt = Date.now();
 
     console.log(
-        `WhatsApp berhasil diautentikasi. Menunggu READY... WA Web=${WA_WEB_VERSION}`
+        'WhatsApp berhasil diautentikasi. Mengecek connection state...'
     );
 
     scheduleReadyWatchdog();
+    watchAuthenticatedReady();
 });
 
 client.on('ready', async () => {
@@ -1086,24 +1213,14 @@ client.on('disconnected', (reason) => {
 
     const disconnectReason = String(reason || 'Disconnected');
 
-    console.warn('WhatsApp disconnected:', disconnectReason);
-
-    /**
-     * LOGOUT terjadi pada browser yang sedang berjalan. Jangan membuat
-     * browser/userDataDir kedua karena browser lama belum tentu tertutup.
-     * Biarkan instance yang sama masuk ke alur QR/authentication lagi.
-     */
-    if (disconnectReason.toUpperCase() === 'LOGOUT') {
-        waState = 'AUTHENTICATING';
-        qrDataUrl = null;
-        lastError = 'WhatsApp logout. Menunggu QR/sesi login berikutnya...';
-        clearReconnectTimer();
-        return;
-    }
-
     waState = 'DISCONNECTED';
     qrDataUrl = null;
     lastError = disconnectReason;
+
+    console.warn(
+        'WhatsApp disconnected. Recovery akan memakai lifecycle restart tunggal:',
+        disconnectReason
+    );
 
     scheduleWhatsAppReconnect(disconnectReason);
 });

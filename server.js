@@ -285,7 +285,7 @@ async function safelyRestartWhatsApp(reason) {
 
         await new Promise((resolve) => setTimeout(resolve, 1500));
 
-        safelyRestartWhatsApp(reason).catch((error) => {
+        initializeWhatsApp('reconnect').catch((error) => {
             console.error('Reconnect WhatsApp gagal:', error);
             scheduleWhatsAppReconnect(error.message || 'Reconnect gagal');
         });
@@ -321,7 +321,7 @@ function scheduleWhatsAppReconnect(reason) {
     reconnectTimer = setTimeout(() => {
         reconnectTimer = null;
 
-        initializeWhatsApp('reconnect').catch((error) => {
+        safelyRestartWhatsApp(reason).catch((error) => {
             console.error('Reconnect WhatsApp gagal:', error);
             scheduleWhatsAppReconnect(error.message || 'Reconnect gagal');
         });

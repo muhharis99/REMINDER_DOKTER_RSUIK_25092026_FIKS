@@ -11,6 +11,10 @@ const HOST = process.env.WA_HOST || '0.0.0.0';
 const CHAT_INCOMING_URL = process.env.CHAT_INCOMING_URL ||
     'http://127.0.0.1/dokter-reminder/api/chat/incoming.php';
 const CHAT_IDENTITY_FILE = path.join(__dirname, '.chat_identity_map.json');
+const WA_WEB_VERSION = process.env.WA_WEB_VERSION || '2.3000.1044810432-alpha';
+const WA_WEB_VERSION_URL =
+    process.env.WA_WEB_VERSION_URL ||
+    `https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/${WA_WEB_VERSION}.html`;
 
 app.disable('x-powered-by');
 app.use(cors());
@@ -23,6 +27,8 @@ let incomingQueueProcessing = false;
 let reconnectTimer = null;
 let reconnectAttempts = 0;
 let initializingWhatsApp = false;
+let readyWatchdogTimer = null;
+let authenticatedAt = 0;
 
 const incomingQueue = new Map();
 const completedIncoming = new Map();
@@ -48,6 +54,12 @@ const client = new Client({
         clientId: 'dokter-reminder',
         dataPath: './.wwebjs_auth'
     }),
+    webVersion: WA_WEB_VERSION,
+    webVersionCache: {
+        type: 'remote',
+        remotePath: WA_WEB_VERSION_URL,
+        strict: true
+    },
     puppeteer: {
         headless: true,
         args: [
@@ -157,6 +169,56 @@ function rememberIdentity(identityId, phone, doctorId = '') {
 }
 
 loadIdentityMap();
+
+function clearReadyWatchdog() {
+    if (readyWatchdogTimer) {
+        clearTimeout(readyWatchdogTimer);
+        readyWatchdogTimer = null;
+    }
+}
+
+function scheduleReadyWatchdog() {
+    clearReadyWatchdog();
+
+    readyWatchdogTimer = setTimeout(async () => {
+        readyWatchdogTimer = null;
+
+        if (waState === 'READY') {
+            return;
+        }
+
+        if (waState !== 'AUTHENTICATED' || !authenticatedAt) {
+            return;
+        }
+
+        const elapsedSeconds = Math.floor(
+            (Date.now() - authenticatedAt) / 1000
+        );
+
+        console.error(
+            `WhatsApp READY timeout setelah ${elapsedSeconds} detik. WA Web=${WA_WEB_VERSION}. Client akan diinisialisasi ulang dengan sesi LocalAuth yang sama.`
+        );
+
+        try {
+            await client.destroy();
+        } catch (error) {
+            console.warn(
+                'Gagal destroy client saat READY watchdog:',
+                error.message || error
+            );
+        }
+
+        waState = 'RECONNECTING';
+        lastError = `READY timeout setelah ${elapsedSeconds} detik`;
+
+        initializeWhatsApp('ready-watchdog').catch((error) => {
+            console.error('Reinitialize dari READY watchdog gagal:', error);
+            scheduleWhatsAppReconnect(
+                error.message || 'READY watchdog gagal'
+            );
+        });
+    }, 45000);
+}
 
 function clearReconnectTimer() {
     if (reconnectTimer) {
@@ -677,6 +739,18 @@ setInterval(() => {
     processIncomingQueue();
 }, 2000);
 
+client.on('loading_screen', (percent, message) => {
+    console.log(
+        `WhatsApp loading: ${percent}% ${message || ''} | WA Web=${WA_WEB_VERSION}`
+    );
+});
+
+client.on('change_state', (state) => {
+    console.log(
+        `WhatsApp state berubah: ${state} | WA Web=${WA_WEB_VERSION}`
+    );
+});
+
 client.on('qr', async (qr) => {
     try {
         qrDataUrl = await QRCode.toDataURL(qr, {
@@ -702,10 +776,19 @@ client.on('authenticated', () => {
     waState = 'AUTHENTICATED';
     qrDataUrl = null;
     lastError = null;
-    console.log('WhatsApp berhasil diautentikasi.');
+    authenticatedAt = Date.now();
+
+    console.log(
+        `WhatsApp berhasil diautentikasi. Menunggu READY... WA Web=${WA_WEB_VERSION}`
+    );
+
+    scheduleReadyWatchdog();
 });
 
 client.on('ready', () => {
+    clearReadyWatchdog();
+    authenticatedAt = 0;
+
     waState = 'READY';
     qrDataUrl = null;
     lastError = null;
@@ -721,6 +804,9 @@ client.on('auth_failure', (message) => {
 });
 
 client.on('disconnected', (reason) => {
+    clearReadyWatchdog();
+    authenticatedAt = 0;
+
     waState = 'DISCONNECTED';
     qrDataUrl = null;
     lastError = String(reason || 'Disconnected');
@@ -792,6 +878,8 @@ app.get('/status', (req, res) => {
         success: true,
         state: waState,
         ready: waState === 'READY',
+        authenticatedAt: authenticatedAt || null,
+        waWebVersion: WA_WEB_VERSION,
         hasQr: Boolean(qrDataUrl),
         error: lastError,
         incomingQueue: incomingQueue.size,

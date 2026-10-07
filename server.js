@@ -84,6 +84,40 @@ const client = new Client({
     }
 });
 
+function extractMessageId(message) {
+    const candidates = [
+        message?.id?._serialized,
+        message?.id?.$1,
+        message?._data?.id?._serialized,
+        message?._data?.id?.$1
+    ];
+
+    for (const candidate of candidates) {
+        const value = String(candidate || '').trim();
+
+        if (value !== '' && value !== '[object Object]') {
+            return value;
+        }
+    }
+
+    try {
+        if (
+            message?.id &&
+            typeof message.id.toString === 'function' &&
+            message.id.toString !== Object.prototype.toString
+        ) {
+            const value = String(message.id.toString()).trim();
+
+            if (value !== '' && value !== '[object Object]') {
+                return value;
+            }
+        }
+    } catch (error) {
+    }
+
+    return null;
+}
+
 function normalizePhone(value) {
     let phone = String(value || '').replace(/\D+/g, '');
 
@@ -674,6 +708,181 @@ async function processIncomingQueue() {
     }
 }
 
+async function repairWhatsAppWebCompatibility() {
+    if (!client.pupPage) {
+        return false;
+    }
+
+    try {
+        const result = await client.pupPage.evaluate(() => {
+            try {
+                const MsgKeyModule = window.require?.('WAWebMsgKey');
+                const MsgKeyProto = MsgKeyModule?.prototype;
+
+                if (!MsgKeyProto) {
+                    return {
+                        ok: false,
+                        reason: 'WAWebMsgKey prototype tidak ditemukan.'
+                    };
+                }
+
+                const existing = Object.getOwnPropertyDescriptor(
+                    MsgKeyProto,
+                    '_serialized'
+                );
+
+                if (!existing) {
+                    Object.defineProperty(MsgKeyProto, '_serialized', {
+                        configurable: true,
+                        get() {
+                            return this.toString();
+                        },
+                        set(value) {
+                            Object.defineProperty(this, '_serialized', {
+                                configurable: true,
+                                enumerable: true,
+                                writable: true,
+                                value
+                            });
+                        }
+                    });
+
+                    return {
+                        ok: true,
+                        patched: true
+                    };
+                }
+
+                return {
+                    ok: true,
+                    patched: false
+                };
+            } catch (error) {
+                return {
+                    ok: false,
+                    reason: error?.message || String(error)
+                };
+            }
+        });
+
+        if (result?.ok) {
+            console.log(
+                `WA Web MsgKey compatibility: ${result.patched ? 'PATCHED' : 'ALREADY_OK'}`
+            );
+            return true;
+        }
+
+        console.warn(
+            'WA Web MsgKey compatibility gagal:',
+            result?.reason || 'unknown error'
+        );
+
+        return false;
+    } catch (error) {
+        console.warn(
+            'Gagal memasang WA Web MsgKey compatibility:',
+            error.message || error
+        );
+        return false;
+    }
+}
+
+function sendMatchScore(pending, message) {
+    if (!message || !isOutgoingMessage(message)) {
+        return 0;
+    }
+
+    const to = String(
+        message?.to ||
+        message?._data?.to ||
+        message?.id?.remote ||
+        message?._data?.id?.remote ||
+        ''
+    ).trim();
+
+    const body = String(
+        message?.body ||
+        message?._data?.body ||
+        ''
+    );
+
+    let score = 0;
+
+    if (pending.chatId !== '' && to === pending.chatId) {
+        score += 100;
+    }
+
+    const targetPhone = normalizePhone(
+        to.split('@')[0]
+    );
+
+    if (
+        pending.phone !== '' &&
+        targetPhone !== '' &&
+        targetPhone === pending.phone
+    ) {
+        score += 80;
+    }
+
+    if (pending.body !== '' && body === pending.body) {
+        score += 50;
+    }
+
+    if (
+        pending.messageId &&
+        extractMessageId(message) === pending.messageId
+    ) {
+        score += 200;
+    }
+
+    return score;
+}
+
+function clearOutgoingTracker(token) {
+    const tracker = pendingOutgoingSends.get(token);
+
+    if (!tracker) {
+        return null;
+    }
+
+    pendingOutgoingSends.delete(token);
+
+    if (tracker.timeout) {
+        clearTimeout(tracker.timeout);
+        tracker.timeout = null;
+    }
+
+    return tracker;
+}
+
+function waitForOutgoingAck({ chatId, phone, body, messageId = null }) {
+    const token = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+
+    return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+            const tracker = clearOutgoingTracker(token);
+
+            if (tracker) {
+                reject(new Error(
+                    `Tidak menerima message_ack untuk tujuan ${phone} dalam ${SEND_TIMEOUT_MS / 1000} detik.`
+                ));
+            }
+        }, SEND_TIMEOUT_MS);
+
+        pendingOutgoingSends.set(token, {
+            token,
+            chatId: String(chatId || ''),
+            phone: normalizePhone(phone),
+            body: String(body || ''),
+            messageId: messageId ? String(messageId) : null,
+            timeout,
+            createdAt: Date.now(),
+            resolve,
+            reject
+        });
+    });
+}
+
 async function sendMessageWithTimeout(chatId, content) {
     let timer = null;
 
@@ -785,11 +994,13 @@ client.on('authenticated', () => {
     scheduleReadyWatchdog();
 });
 
-client.on('ready', () => {
+client.on('ready', async () => {
     clearReadyWatchdog();
     authenticatedAt = 0;
 
     waState = 'READY';
+
+    await repairWhatsAppWebCompatibility();
     qrDataUrl = null;
     lastError = null;
     reconnectAttempts = 0;
@@ -836,14 +1047,43 @@ client.on('message_create', (message) => {
 });
 
 client.on('message_ack', (message, ack) => {
-    const messageId =
-        message?.id?._serialized ||
-        message?._data?.id?._serialized ||
-        '';
+    const messageId = extractMessageId(message);
 
     console.log(
         `[${now()}] MESSAGE_ACK MessageId=${messageId || '-'} Ack=${ack} To=${message?.to || message?._data?.to || '-'}`
     );
+
+    for (const [token, tracker] of pendingOutgoingSends.entries()) {
+        if (Date.now() - tracker.createdAt > SEND_TIMEOUT_MS) {
+            continue;
+        }
+
+        const score = sendMatchScore(tracker, message);
+
+        if (score < 100) {
+            continue;
+        }
+
+        const current = clearOutgoingTracker(token);
+
+        if (!current) {
+            continue;
+        }
+
+        if (Number(ack) < 1) {
+            current.reject(new Error(
+                'WhatsApp mengembalikan ACK ERROR untuk pesan outgoing.'
+            ));
+            continue;
+        }
+
+        current.resolve({
+            ack: Number(ack),
+            ackLabel: ackLabel(ack),
+            message,
+            messageId: extractMessageId(message)
+        });
+    }
 });
 
 app.get('/', (req, res) => {
@@ -934,15 +1174,43 @@ app.post('/send', async (req, res) => {
         rememberIdentity(numberId._serialized, phone, doctorId);
         rememberIdentity(numberId.user, phone, doctorId);
 
+        const ackWaiter = waitForOutgoingAck({
+            chatId: numberId._serialized,
+            phone,
+            body: message
+        });
+
         const sentMessage = await sendMessageWithTimeout(
             numberId._serialized,
             message
         );
 
-        const messageId =
-            sentMessage?.id?._serialized ||
-            sentMessage?._data?.id?._serialized ||
-            null;
+        let messageId = extractMessageId(sentMessage);
+
+        if (!messageId) {
+            const ackResult = await ackWaiter;
+
+            messageId =
+                ackResult.messageId ||
+                extractMessageId(ackResult.message) ||
+                `WA-${Date.now()}`;
+
+            terminalLog('WHATSAPP TERKONFIRMASI VIA MESSAGE_ACK', {
+                Status: 'TERKONFIRMASI',
+                DoctorId: doctorId || '-',
+                Tujuan: phone,
+                MessageId: messageId,
+                Ack: ackResult.ack,
+                AckStatus: ackResult.ackLabel
+            });
+        } else {
+            clearOutgoingTracker(
+                Array.from(pendingOutgoingSends.keys()).find(
+                    (token) =>
+                        pendingOutgoingSends.get(token)?.messageId === messageId
+                )
+            );
+        }
 
         if (!messageId) {
             throw new Error('WhatsApp tidak mengembalikan Message ID setelah sendMessage().');
@@ -953,7 +1221,18 @@ app.post('/send', async (req, res) => {
         rememberIdentity(sentMessage?._data?.to?._serialized, phone, doctorId);
         rememberIdentity(sentMessage?._data?.to?.user, phone, doctorId);
 
-        const ack = await verifyServerAck(sentMessage);
+        let ack = Number(sentMessage?.ack ?? 0);
+
+        if (ack <= 0) {
+            const ackResult = await ackWaiter;
+            ack = ackResult.ack;
+        }
+
+        if (ack <= 0) {
+            throw new Error(
+                `Pesan ${messageId} tidak memperoleh ACK server WhatsApp.`
+            );
+        }
 
         terminalLog('WHATSAPP BERHASIL DIKIRIM', {
             Status: 'BERHASIL',

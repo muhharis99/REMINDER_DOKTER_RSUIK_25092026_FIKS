@@ -551,6 +551,20 @@ $encodedFilterQuery = htmlspecialchars($filterQuery, ENT_QUOTES, 'UTF-8');
                             throw new Error(result.message || 'Gagal mengirim WhatsApp.');
                         }
 
+                        if (result.queued) {
+                            await Swal.fire({
+                                icon: 'success',
+                                title: 'Permintaan Diteruskan',
+                                text: 'Pesan untuk ' + phone + ' sudah diteruskan ke WhatsApp Gateway.',
+                                timer: 1200,
+                                showConfirmButton: false,
+                                allowOutsideClick: false
+                            });
+
+                            window.location.href = 'index.php?<?= $encodedFilterQuery ?>';
+                            return;
+                        }
+
                         await Swal.fire({
                             icon: 'success',
                             title: 'Berhasil',
@@ -560,7 +574,8 @@ $encodedFilterQuery = htmlspecialchars($filterQuery, ENT_QUOTES, 'UTF-8');
                         });
 
                         window.location.href = 'index.php?<?= $encodedFilterQuery ?>' + '&action=sent&id=' + encodeURIComponent(reminderId);
-                    } catch (error) {
+
+                                            } catch (error) {
                         await Swal.fire({
                             icon: 'error',
                             title: 'Gagal Mengirim',

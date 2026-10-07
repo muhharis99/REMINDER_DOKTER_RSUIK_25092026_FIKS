@@ -8,10 +8,6 @@ const { Client, LocalAuth } = require('whatsapp-web.js');
 const app = express();
 const PORT = Number(process.env.WA_PORT || 3210);
 const HOST = process.env.WA_HOST || '0.0.0.0';
-const CHAT_INCOMING_URL = process.env.CHAT_INCOMING_URL ||
-    `http://127.0.0.1:${process.env.PHP_PORT || 8049}/wa_rsuik/api/chat/incoming.php`;
-const CHAT_IDENTITY_FILE = path.join(__dirname, '.chat_identity_map.json');
-
 app.disable('x-powered-by');
 app.use(cors());
 app.use(express.json({ limit: '128kb' }));
@@ -19,7 +15,6 @@ app.use(express.json({ limit: '128kb' }));
 let waState = 'STARTING';
 let qrDataUrl = null;
 let lastError = null;
-let incomingQueueProcessing = false;
 let reconnectTimer = null;
 let reconnectAttempts = 0;
 let initializingWhatsApp = false;
@@ -27,9 +22,6 @@ let readyWatchdogTimer = null;
 let authenticatedAt = 0;
 let shutdownInProgress = false;
 
-const incomingQueue = new Map();
-const completedIncoming = new Map();
-const contactIdentityMap = new Map();
 const pendingOutgoingSends = new Map();
 
 const SEND_TIMEOUT_MS = 20000;
@@ -178,78 +170,6 @@ function normalizePhone(value) {
 function isValidIndonesianPhone(value) {
     return /^62\d{8,15}$/.test(normalizePhone(value));
 }
-
-function loadIdentityMap() {
-    try {
-        if (!fs.existsSync(CHAT_IDENTITY_FILE)) {
-            return;
-        }
-
-        const raw = fs.readFileSync(CHAT_IDENTITY_FILE, 'utf8');
-        const data = JSON.parse(raw);
-
-        if (!data || typeof data !== 'object') {
-            return;
-        }
-
-        Object.entries(data).forEach(([identityId, identity]) => {
-            if (!identity || typeof identity !== 'object') {
-                return;
-            }
-
-            const phone = normalizePhone(identity.phone);
-            const doctorId = String(identity.doctor_id || '').trim();
-
-            if (identityId && isValidIndonesianPhone(phone)) {
-                contactIdentityMap.set(identityId, {
-                    phone,
-                    doctor_id: doctorId
-                });
-            }
-        });
-    } catch (error) {
-        console.error('Gagal membaca mapping chat dokter:', error.message || error);
-    }
-}
-
-function saveIdentityMap() {
-    try {
-        const data = {};
-
-        for (const [identityId, identity] of contactIdentityMap.entries()) {
-            data[identityId] = identity;
-        }
-
-        fs.writeFileSync(
-            CHAT_IDENTITY_FILE,
-            JSON.stringify(data, null, 2),
-            'utf8'
-        );
-    } catch (error) {
-        console.error('Gagal menyimpan mapping chat dokter:', error.message || error);
-    }
-}
-
-function rememberIdentity(identityId, phone, doctorId = '') {
-    const id = String(identityId || '').trim();
-    const normalizedPhone = normalizePhone(phone);
-    const normalizedDoctorId = String(doctorId || '').trim();
-
-    if (id === '' || !isValidIndonesianPhone(normalizedPhone)) {
-        return;
-    }
-
-    const existing = contactIdentityMap.get(id) || {};
-
-    contactIdentityMap.set(id, {
-        phone: normalizedPhone,
-        doctor_id: normalizedDoctorId || existing.doctor_id || ''
-    });
-
-    saveIdentityMap();
-}
-
-loadIdentityMap();
 
 function clearReadyWatchdog() {
     if (readyWatchdogTimer) {
@@ -419,383 +339,10 @@ function terminalLog(status, data = {}) {
     console.log(lines.join('\n'));
 }
 
-function incomingMessageContent(message) {
-    const type = String(message.type || 'chat').toLowerCase();
-    const body = String(message.body || '').trim();
-
-    if (body !== '') {
-        return body;
-    }
-
-    if (type === 'image') {
-        return '[IMAGE]';
-    }
-
-    if (type === 'document') {
-        return '[DOCUMENT]';
-    }
-
-    if (type === 'audio' || type === 'ptt') {
-        return '[AUDIO]';
-    }
-
-    if (type === 'video') {
-        return '[VIDEO]';
-    }
-
-    return '[MESSAGE]';
-}
-
-function incomingMessageType(message) {
-    const type = String(message.type || 'chat').toLowerCase();
-
-    if (type === 'chat') {
-        return 'text';
-    }
-
-    if (type === 'ptt') {
-        return 'audio';
-    }
-
-    return type;
-}
-
 function isOutgoingMessage(message) {
     return message?.fromMe === true ||
         message?.id?.fromMe === true ||
         String(message?.id?.fromMe || '').toLowerCase() === 'true';
-}
-
-function phoneCandidatesFromContact(contact) {
-    if (!contact) {
-        return [];
-    }
-
-    return [
-        contact.number,
-        contact.id?.user,
-        contact.phoneNumber?.user,
-        contact.phoneNumber?._serialized,
-        contact._data?.number,
-        contact._data?.phoneNumber?.user,
-        contact._data?.phoneNumber?._serialized,
-        contact._data?.id?.user
-    ];
-}
-
-function identityById(identityId) {
-    const id = String(identityId || '').trim();
-
-    if (id === '') {
-        return null;
-    }
-
-    return contactIdentityMap.get(id) || null;
-}
-
-async function resolveIncomingIdentity(message) {
-    const sourceIds = [
-        message?.author,
-        message?.from,
-        message?.id?.remote?._serialized,
-        message?.id?.remote?.$1,
-        message?._data?.id?.remote?._serialized,
-        message?._data?.id?.remote?.$1
-    ]
-        .map((value) => String(value || '').trim())
-        .filter(Boolean);
-
-    for (const sourceId of sourceIds) {
-        const mapped = identityById(sourceId);
-
-        if (mapped) {
-            return mapped;
-        }
-    }
-
-    try {
-        const chat = await message.getChat();
-        const chatIds = [
-            chat?.id?._serialized,
-            chat?.id?.user,
-            chat?._data?.id?._serialized,
-            chat?._data?.id?.user
-        ]
-            .map((value) => String(value || '').trim())
-            .filter(Boolean);
-
-        for (const chatId of chatIds) {
-            const mapped = identityById(chatId);
-
-            if (mapped) {
-                sourceIds.forEach((sourceId) => {
-                    rememberIdentity(sourceId, mapped.phone, mapped.doctor_id);
-                });
-
-                return mapped;
-            }
-        }
-    } catch (error) {
-        console.warn('Gagal membaca chat incoming:', error.message || error);
-    }
-
-    for (const sourceId of sourceIds) {
-        if (!sourceId.endsWith('@c.us')) {
-            continue;
-        }
-
-        const directPhone = normalizePhone(sourceId.split('@')[0]);
-
-        if (isValidIndonesianPhone(directPhone)) {
-            return {
-                phone: directPhone,
-                doctor_id: ''
-            };
-        }
-    }
-
-    const rawCandidates = [
-        message?._data?.senderObj?.phoneNumber?.user,
-        message?._data?.senderObj?.phoneNumber?._serialized,
-        message?._data?.from?.phoneNumber?.user,
-        message?._data?.from?.phoneNumber?._serialized,
-        message?.rawData?.senderObj?.phoneNumber?.user,
-        message?.rawData?.senderObj?.phoneNumber?._serialized
-    ];
-
-    for (const candidate of rawCandidates) {
-        const phone = normalizePhone(candidate);
-
-        if (isValidIndonesianPhone(phone)) {
-            return {
-                phone,
-                doctor_id: ''
-            };
-        }
-    }
-
-    try {
-        const contact = await message.getContact();
-
-        for (const candidate of phoneCandidatesFromContact(contact)) {
-            const phone = normalizePhone(candidate);
-
-            if (isValidIndonesianPhone(phone)) {
-                const contactId = String(contact?.id?._serialized || '').trim();
-
-                if (contactId !== '') {
-                    rememberIdentity(contactId, phone, '');
-                }
-
-                sourceIds.forEach((sourceId) => {
-                    rememberIdentity(sourceId, phone, '');
-                });
-
-                return {
-                    phone,
-                    doctor_id: ''
-                };
-            }
-        }
-    } catch (error) {
-        console.warn('Gagal resolve contact incoming:', error.message || error);
-    }
-
-    terminalLog('CHAT DOKTER MASUK BELUM TERIDENTIFIKASI', {
-        Status: 'SENDER_TIDAK_DIKENAL',
-        Source: sourceIds.join(', ') || '-',
-        MessageId: message?.id?._serialized || '-'
-    });
-
-    return null;
-}
-
-async function incomingPayload(message) {
-    if (!message || isOutgoingMessage(message)) {
-        return null;
-    }
-
-    const source = String(message.author || message.from || '');
-
-    if (source === '' ||
-        source === 'status@broadcast' ||
-        source.endsWith('@g.us') ||
-        source.endsWith('@broadcast')) {
-        return null;
-    }
-
-    const identity = await resolveIncomingIdentity(message);
-    const messageId = extractMessageId(message) || '';
-
-    if (!identity || !messageId) {
-        return null;
-    }
-
-    const timestamp = Number(message.timestamp || 0);
-    const receivedAt = timestamp > 0
-        ? new Date(timestamp * 1000).toISOString()
-        : new Date().toISOString();
-
-    return {
-        message_id: messageId,
-        doctor_id: identity.doctor_id || '',
-        phone: identity.phone,
-        message_type: incomingMessageType(message),
-        message: incomingMessageContent(message),
-        received_at: receivedAt
-    };
-}
-
-function retryDelay(attempts) {
-    const delays = [
-        1000,
-        2000,
-        5000,
-        10000,
-        20000,
-        30000,
-        60000
-    ];
-
-    return delays[Math.min(attempts, delays.length - 1)];
-}
-
-function cleanupCompletedIncoming() {
-    const cutoff = Date.now() - (30 * 60 * 1000);
-
-    for (const [messageId, completedAt] of completedIncoming.entries()) {
-        if (completedAt < cutoff) {
-            completedIncoming.delete(messageId);
-        }
-    }
-}
-
-async function enqueueIncomingMessage(message, eventName) {
-    const payload = await incomingPayload(message);
-
-    if (!payload) {
-        return;
-    }
-
-    const messageId = payload.message_id;
-
-    cleanupCompletedIncoming();
-
-    if (completedIncoming.has(messageId) || incomingQueue.has(messageId)) {
-        return;
-    }
-
-    incomingQueue.set(messageId, {
-        payload,
-        attempts: 0,
-        nextAttemptAt: Date.now(),
-        lastError: null,
-        eventName
-    });
-
-    terminalLog('CHAT DOKTER MASUK DITERIMA', {
-        Status: 'MASUK ANTREAN',
-        DoctorId: payload.doctor_id || '-',
-        Pengirim: payload.phone,
-        MessageId: messageId,
-        Event: eventName,
-        Antrean: incomingQueue.size
-    });
-
-    processIncomingQueue();
-}
-
-async function deliverIncomingItem(messageId, item) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
-
-    try {
-        const response = await fetch(CHAT_INCOMING_URL, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Accept': 'application/json'
-            },
-            body: JSON.stringify(item.payload),
-            signal: controller.signal
-        });
-
-        const responseText = await response.text();
-
-        if (!response.ok) {
-            throw new Error(
-                `HTTP ${response.status}: ${responseText.slice(0, 250)}`
-            );
-        }
-
-        let result = null;
-
-        try {
-            result = JSON.parse(responseText);
-        } catch (error) {
-            throw new Error('Respons webhook incoming bukan JSON yang valid.');
-        }
-
-        if (!result || result.success !== true) {
-            throw new Error(
-                result?.message || 'Webhook incoming tidak mengembalikan status sukses.'
-            );
-        }
-
-        incomingQueue.delete(messageId);
-        completedIncoming.set(messageId, Date.now());
-
-        terminalLog('CHAT DOKTER MASUK DISIMPAN', {
-            Status: 'BERHASIL',
-            DoctorId: result.doctor_id || item.payload.doctor_id || '-',
-            Pengirim: result.phone || item.payload.phone,
-            MessageId: messageId,
-            Percobaan: item.attempts + 1,
-            Antrean: incomingQueue.size
-        });
-    } catch (error) {
-        item.attempts += 1;
-        item.lastError = error.message || String(error);
-        item.nextAttemptAt = Date.now() + retryDelay(item.attempts - 1);
-        incomingQueue.set(messageId, item);
-
-        terminalLog('CHAT DOKTER MASUK MENUNGGU RETRY', {
-            Status: 'RETRY',
-            DoctorId: item.payload.doctor_id || '-',
-            Pengirim: item.payload.phone,
-            MessageId: messageId,
-            Percobaan: item.attempts,
-            UlangDalamDetik: Math.round(
-                (item.nextAttemptAt - Date.now()) / 1000
-            ),
-            Alasan: item.lastError,
-            Antrean: incomingQueue.size
-        });
-    } finally {
-        clearTimeout(timeout);
-    }
-}
-
-async function processIncomingQueue() {
-    if (incomingQueueProcessing) {
-        return;
-    }
-
-    incomingQueueProcessing = true;
-
-    try {
-        const currentTime = Date.now();
-
-        for (const [messageId, item] of incomingQueue.entries()) {
-            if (item.nextAttemptAt > currentTime) {
-                continue;
-            }
-
-            await deliverIncomingItem(messageId, item);
-        }
-    } finally {
-        incomingQueueProcessing = false;
-    }
 }
 
 async function repairWhatsAppWebCompatibility() {
@@ -1104,10 +651,6 @@ async function verifyServerAck(sentMessage) {
     );
 }
 
-setInterval(() => {
-    processIncomingQueue();
-}, 2000);
-
 async function watchAuthenticatedReady() {
     const startedAt = Date.now();
     const timeoutMs = 90000;
@@ -1272,25 +815,10 @@ client.on('disconnected', (reason) => {
     scheduleWhatsAppReconnect(disconnectReason);
 });
 
-client.on('message', (message) => {
-    if (isOutgoingMessage(message)) {
-        return;
-    }
-
-    enqueueIncomingMessage(message, 'message').catch((error) => {
-        console.error('Gagal memproses event message:', error);
-    });
-});
-
 client.on('message_create', (message) => {
     if (isOutgoingMessage(message)) {
         captureOutgoingMessage(message);
-        return;
     }
-
-    enqueueIncomingMessage(message, 'message_create').catch((error) => {
-        console.error('Gagal memproses event message_create:', error);
-    });
 });
 
 client.on('message_ack', (message, ack) => {
@@ -1419,9 +947,6 @@ app.post('/send', async (req, res) => {
             });
         }
 
-        rememberIdentity(numberId._serialized, phone, doctorId);
-        rememberIdentity(numberId.user, phone, doctorId);
-
         const ackWaiter = waitForOutgoingAck({
             chatId: numberId._serialized,
             phone,
@@ -1511,7 +1036,6 @@ app.post('/send', async (req, res) => {
             MessageId: messageId,
             Ack: ack,
             AckStatus: ack >= 2 ? 'DELIVERED' : 'SERVER_ACCEPTED',
-            Mapping: contactIdentityMap.size
         });
 
         return res.json({

@@ -201,7 +201,7 @@ if ($method === 'GET' && $action === 'delivery') {
         }
 
         $requestId = (string) ($row['gateway_request_id'] ?? '');
-        if (strtoupper((string) $row['status']) === 'PROCESSING' && $requestId !== '') {
+        if (in_array(strtoupper((string) $row['status']), ['PROCESSING', 'UNKNOWN'], true) && $requestId !== '') {
             $gatewayStatus = gatewayProxyRequest('GET', '/send-status/' . rawurlencode($requestId));
             if (isset($gatewayStatus['json']['status']) &&
                 in_array(strtoupper((string) $gatewayStatus['json']['status']), ['SENT', 'FAILED', 'UNKNOWN'], true)) {

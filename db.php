@@ -74,6 +74,14 @@ function get_db(string $name = 'local'): PDO
     }
 
     $config = $databases[$name];
+
+    foreach (['host', 'user', 'name'] as $requiredKey) {
+        if (!isset($config[$requiredKey]) || trim((string) $config[$requiredKey]) === '') {
+            throw new RuntimeException(
+                "Database configuration '$name' is incomplete. Set runtime variables or configure config.local.php."
+            );
+        }
+    }
     $host = $config['host'];
     $port = $config['port'] ?? 3306;
     $dbname = $config['name'];

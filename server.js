@@ -2,8 +2,8 @@ const express = require('express');
 const QRCode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 const { Client, LocalAuth } = require('whatsapp-web.js');
+const { ackLabel, normalizePhone, isValidIndonesianPhone, maskPhone, tokenEquals } = require('./lib/gateway-utils');
 
 const app = express();
 const PORT = Number(process.env.WA_PORT || 3210);
@@ -165,30 +165,6 @@ function extractMessageId(message) {
     return null;
 }
 
-function ackLabel(ack) {
-    const value = Number(ack);
-
-    if (value >= 3) return 'READ';
-    if (value >= 2) return 'DELIVERED';
-    if (value >= 1) return 'SERVER_ACCEPTED';
-
-    return 'UNKNOWN';
-}
-
-function normalizePhone(value) {
-    let phone = String(value || '').replace(/\D+/g, '');
-
-    if (phone.startsWith('0')) {
-        phone = '62' + phone.slice(1);
-    }
-
-    return phone;
-}
-
-function isValidIndonesianPhone(value) {
-    return /^62\d{8,15}$/.test(normalizePhone(value));
-}
-
 function clearReadyWatchdog() {
     if (readyWatchdogTimer) {
         clearTimeout(readyWatchdogTimer);
@@ -338,13 +314,6 @@ async function initializeWhatsApp(reason = 'startup') {
 
 
 
-function tokenEquals(actual, expected) {
-    if (!actual || !expected) return false;
-    const a = Buffer.from(String(actual));
-    const b = Buffer.from(String(expected));
-    return a.length === b.length && crypto.timingSafeEqual(a, b);
-}
-
 function requireGatewayApiToken(req, res, next) {
     if (!WA_API_TOKEN) {
         return res.status(503).json({
@@ -366,12 +335,6 @@ function requireGatewayApiToken(req, res, next) {
     }
 
     return next();
-}
-
-function maskPhone(value) {
-    const phone = String(value || '').split('@')[0].replace(/\\D+/g, '');
-    if (phone.length < 7) return phone ? '***' : '-';
-    return phone.slice(0, 3) + '*'.repeat(Math.max(2, phone.length - 5)) + phone.slice(-2);
 }
 
 async function notifyDeliveryResult(job, result) {
@@ -1131,7 +1094,7 @@ app.post('/send', requireGatewayApiToken, async (req, res) => {
         });
     }
 
-    if (!phone || !/^62\d{8,15}$/.test(phone)) {
+    if (!isValidIndonesianPhone(phone)) {
         return res.status(422).json({
             success: false,
             queued: false,

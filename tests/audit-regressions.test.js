@@ -136,3 +136,17 @@ test('optional schema alignment migration clearly guards the known FK schema', (
     assert.match(migration, /DROP FOREIGN KEY fk_reminder_doctor/);
     assert.match(migration, /MODIFY COLUMN doctor_id VARCHAR\(50\) NOT NULL/);
 });
+
+test('same-origin proxy compares scheme, host, and port', () => {
+    const proxy = read('gateway_proxy.php');
+    assert.match(proxy, /\$originScheme === \$requestScheme/);
+    assert.match(proxy, /\$originHost === \$requestHost/);
+    assert.match(proxy, /\$originPort === \$requestPort/);
+});
+
+test('callback supports forwarded Authorization headers without weakening token check', () => {
+    const callback = read('gateway_callback.php');
+    assert.match(callback, /REDIRECT_HTTP_AUTHORIZATION/);
+    assert.match(callback, /strcasecmp\(\(string\) \$headerName, 'Authorization'\)/);
+    assert.match(callback, /hash_equals\(\$expectedToken, \$suppliedToken\)/);
+});

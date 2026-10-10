@@ -26,6 +26,7 @@ const pendingOutgoingSends = new Map();
 const deliveryJobs = new Map();
 const activeReminderSends = new Map();
 const activeChatSends = new Map();
+let activeGatewaySendRequest = null;
 
 const WA_API_TOKEN = String(process.env.WA_API_TOKEN || '').trim();
 const WA_CALLBACK_URL = String(process.env.WA_CALLBACK_URL || '').trim();
@@ -405,6 +406,9 @@ async function finishDelivery(requestId, result) {
     }
     if (job.phone && activeChatSends.get(String(job.phone)) === requestId) {
         activeChatSends.delete(String(job.phone));
+    }
+    if (activeGatewaySendRequest === requestId) {
+        activeGatewaySendRequest = null;
     }
 
     // Keep a bounded in-memory status window for polling if the PHP callback is late.
@@ -1101,6 +1105,15 @@ app.post('/send', requireGatewayApiToken, async (req, res) => {
         });
     }
 
+    if (activeGatewaySendRequest && activeGatewaySendRequest !== requestId) {
+        return res.status(409).json({
+            success: false,
+            queued: false,
+            request_id: activeGatewaySendRequest,
+            message: 'Gateway sedang memproses pesan lain. Tunggu hasilnya lalu coba lagi.'
+        });
+    }
+
     const activeChatRequestId = activeChatSends.get(phone);
     if (activeChatRequestId && activeChatRequestId !== requestId) {
         return res.status(409).json({
@@ -1127,6 +1140,7 @@ app.post('/send', requireGatewayApiToken, async (req, res) => {
     deliveryJobs.set(requestId, job);
     activeReminderSends.set(String(reminderId), requestId);
     activeChatSends.set(phone, requestId);
+    activeGatewaySendRequest = requestId;
 
     try {
         await repairWhatsAppWebCompatibility();

@@ -36,7 +36,7 @@ function gatewayProxyRequest(string $method, string $path, ?array $payload = nul
     $apiToken = trim((string) ($config['api_token'] ?? ''));
 
     if ($baseUrl === '' || $apiToken === '') {
-        return ['transport_error' => 'Gateway internal URL atau WA_API_TOKEN belum dikonfigurasi.'];
+        return ['configuration_error' => 'Gateway internal URL atau WA_API_TOKEN belum dikonfigurasi.'];
     }
 
     $url = $baseUrl . $path;
@@ -164,6 +164,21 @@ function persistGatewayDeliveryResult(PDO $pdo, string $requestId, array $result
 
 $method = strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'));
 $action = strtolower(trim((string) ($_GET['action'] ?? '')));
+
+if ($method === 'GET' && $action === 'qr') {
+    $result = gatewayProxyRequest('GET', '/qr');
+    if (isset($result['configuration_error']) || isset($result['transport_error'])) {
+        gatewayProxyJson(503, [
+            'success' => false,
+            'ready' => false,
+            'hasQr' => false,
+            'state' => 'GATEWAY_UNAVAILABLE',
+            'error' => 'Status QR gateway tidak dapat diambil. Periksa konfigurasi service.',
+        ]);
+    }
+
+    gatewayProxyJson((int) $result['http_status'], (array) $result['json']);
+}
 
 if ($method === 'GET' && $action === 'status') {
     $result = gatewayProxyRequest('GET', '/status');
@@ -375,6 +390,32 @@ try {
         'phone' => $phone,
         'message' => $message,
     ]);
+
+    if (isset($gatewayResult['configuration_error'])) {
+        $configurationError = 'Konfigurasi autentikasi gateway belum lengkap.';
+        $update = $pdo->prepare("
+            UPDATE reminders
+            SET status = 'FAILED',
+                delivery_error = ?,
+                delivery_updated_at = NOW()
+            WHERE id = ?
+              AND gateway_request_id = ?
+              AND status = 'PROCESSING'
+        ");
+        $update->execute([$configurationError, $reminderId, $requestId]);
+        if ($update->rowCount() > 0) {
+            logAction((int) $reminderId, 'FAILED');
+        }
+
+        gatewayProxyJson(503, [
+            'success' => false,
+            'queued' => false,
+            'status' => 'FAILED',
+            'request_id' => $requestId,
+            'reminder_id' => (int) $reminderId,
+            'message' => $configurationError,
+        ]);
+    }
 
     if (isset($gatewayResult['transport_error'])) {
         // Do not mark FAILED: the gateway may have accepted the request before the connection broke.

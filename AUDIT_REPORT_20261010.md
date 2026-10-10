@@ -20,7 +20,7 @@ Audit dilakukan pada source repository PHP native + MariaDB/MySQL/PDO + Node.js 
 | 1 | High | `server.js` | Handler `message_ack` memanggil `ackLabel(ack)`, tetapi helper tidak didefinisikan pada kode awal. | Pemrosesan ACK dapat gagal dengan `ReferenceError`. | **Diperbaiki**; helper dipisahkan ke `lib/gateway-utils.js` dan dicakup test. |
 | 2 | High | `server.js`, `gateway_callback.php`, `gateway_proxy.php`, `index.php` | Endpoint kirim mengembalikan HTTP 202 sebelum hasil background diketahui, dan hasil ACK awal tidak disinkronkan ke DB. | Status dashboard bisa menyimpang dari hasil gateway. | **Alur callback + polling ditambahkan**; perlu tes integrasi pada server target. |
 | 3 | High | `index.php` | Browser sebelumnya mengubah status DB dengan query string `action=sent/failed`; error fetch dapat menandai FAILED meski hasil gateway tidak diketahui. | False-negative dan potensi pengiriman ulang ganda. | **Diperbaiki**; state hasil hanya dicatat melalui proxy/callback; browser tidak menulis status final lewat URL. |
-| 4 | High | `gateway_proxy.php`, `server.js` | Tidak ada korelasi persisten/idempotensi per reminder pada jalur pengiriman awal. | Double-click, retry, atau restart dapat memulai pengiriman ganda. | **Diperbaiki sebagian besar** dengan UUID request ID, status PROCESSING, locking DB, dan locking in-memory pada gateway; bukan jaminan exactly-once setelah gangguan eksternal. |
+| 4 | High | `gateway_proxy.php`, `server.js` | Tidak ada korelasi persisten/idempotensi per reminder pada jalur pengiriman awal. | Double-click, retry, atau restart dapat memulai pengiriman ganda. | **Diperbaiki sebagian besar** dengan UUID request ID, status PROCESSING, locking DB, locking in-memory pada gateway, dan satu pengiriman aktif per client untuk mencegah panggilan bersamaan; bukan jaminan exactly-once setelah gangguan eksternal. |
 | 5 | High | `server.js`, `gateway_qr.php`, `gateway_proxy.php` | QR gateway awal bisa dilihat melalui halaman Node langsung tanpa autentikasi. | QR berpotensi terpapar ke siapa pun yang dapat mengakses port. | **Diperbaiki pada kode**: QR diambil lewat endpoint ber-token dan halaman PHP; root Node tidak lagi menampilkan QR; bind default diubah ke loopback. Perlu verifikasi konfigurasi jaringan deployment. |
 | 6 | High | `server.js`, `gateway_proxy.php`, `config.php` | Gateway awal tidak mempunyai token autentikasi pada endpoint operasi dan memakai CORS terbuka. | Endpoint pengiriman rentan dipanggil langsung dari jaringan. | **Diperbaiki untuk akses Node-to-Node** dengan Bearer token, CORS browser dihilangkan, dan gateway default hanya loopback. **Login/otorisasi pengguna aplikasi PHP belum ditemukan di repository**; jangan mengekspos aplikasi PHP ke publik tanpa kontrol akses jaringan/aplikasi. |
 | 7 | High | `config.php`, `config.local.example.php`, `.gitignore` | Kredensial DB ditulis di file yang dilacak Git. | Kredensial berpotensi terekspos. | **Nilai rahasia dihapus dari versi kerja saat ini** dan dialihkan ke environment/config lokal yang diabaikan Git. Riwayat Git lama tetap dapat memuat rahasia: rotasi kredensial wajib dan tidak digantikan oleh penghapusan pada commit baru. |
@@ -34,7 +34,7 @@ Audit dilakukan pada source repository PHP native + MariaDB/MySQL/PDO + Node.js 
 
 ## C. Daftar perubahan
 
-- **Gateway:** `server.js`, `lib/gateway-utils.js` — helper ACK, masking nomor di sebagian log, token internal, endpoint QR/status pengiriman, korelasi UUID, deduplikasi request/reminder/nomor, timeout, dan callback hasil.
+- **Gateway:** `server.js`, `lib/gateway-utils.js` — helper ACK, masking nomor di sebagian log, token internal, endpoint QR/status pengiriman, korelasi UUID, deduplikasi request/reminder/nomor, lock global satu pengiriman aktif, timeout, dan callback hasil.
 - **Dashboard/API internal:** `index.php`, `gateway_proxy.php`, `gateway_callback.php`, `gateway_qr.php` — pengiriman lewat PHP proxy, status polling, callback bertoken, tampilan QR melalui halaman PHP, dan penghindaran status palsu akibat error browser.
 - **Database:** `database/schema.sql`, `database/migrations/20261010_add_reminder_delivery_tracking.sql`, `database/migrations/20261010_align_reminder_doctor_key.sql`, `cron/reconcile_delivery.php`, `db.php` — tracking status, kunci permintaan, validasi konfigurasi, dan penanganan status kedaluwarsa.
 - **Keamanan/konfigurasi:** `config.php`, `config.local.example.php`, `.gitignore` — nilai runtime dipindahkan dari file terlacak; konfigurasi lokal contoh ditambah.
@@ -49,7 +49,7 @@ Perubahan dilakukan di branch `audit/fix-send-status-20261010`. Tidak ada merge 
 |---|---|---|
 | Dependency install | `npm ci --ignore-scripts` berhasil di GitHub Actions. | Tidak membuktikan kompatibilitas runtime WhatsApp live. |
 | Node static check | `node --check server.js` dan `node --check lib/gateway-utils.js` berhasil. | Tidak menjalankan browser WhatsApp. |
-| Regression tests | 15 test Node lulus: ACK label, normalisasi/masking nomor, perbandingan token, kontrak endpoint, state UI, migrasi additive, callback, konfigurasi, dependency lock, perlindungan QR, dan skema kode dokter. | Sebagian berupa kontrak source/struktur; bukan end-to-end dengan DB nyata. |
+| Regression tests | 18 test Node lulus: ACK label, normalisasi/masking nomor, perbandingan token, kontrak endpoint, state UI, migrasi additive, callback, konfigurasi, dependency lock, perlindungan QR, dan skema kode dokter. | Sebagian berupa kontrak source/struktur; bukan end-to-end dengan DB nyata. |
 | PHP lint | Semua file PHP di luar `vendor` lulus `php -l` di GitHub Actions. | Tidak menjalankan query ke server database atau klik UI dalam browser. |
 | QR/Auth WhatsApp | **Belum diuji langsung.** | Membutuhkan browser, sesi WhatsApp, dan perangkat tertaut target. |
 | Pesan ke nomor uji | **Belum diuji langsung.** | Harus memakai nomor uji yang secara eksplisit diizinkan. |
@@ -63,7 +63,7 @@ Tautan workflow: [GitHub Actions audit-checks](https://github.com/muhharis99/REM
 - **QR:** akses kode dilindungi dengan token internal dan QR ditampilkan melalui halaman PHP; pemindaian sebenarnya belum diuji.
 - **Sesi/rekoneksi:** implementasi lifecycle existing dipertahankan; belum diuji dengan sesi live atau logout/revoked session.
 - **Pengiriman:** request ID + callback/polling + status PROCESSING/SENT/FAILED/UNKNOWN sudah disiapkan; perlu nomor uji dan database aktual untuk verifikasi akhir.
-- **Deduplikasi:** request ID, status row locking, dan active send locks membantu mencegah duplikat. Exactly-once tidak dijanjikan.
+- **Deduplikasi:** request ID, status row locking, active send locks, serta serialisasi satu pengiriman per client membantu mencegah duplikat dan race condition. Exactly-once tidak dijanjikan.
 - **Scheduler:** cron reminder tetap menyiapkan record. Cron rekonsiliasi baru harus dipasang; tidak ada pengiriman terjadwal otomatis yang ditambahkan.
 - **Database:** migrasi additive tersedia, tetapi belum dijalankan. Periksa skema existing dan mapping kode dokter.
 - **Dashboard/report:** status PROCESSING/UNKNOWN disertakan dan browser tidak lagi menyetel SENT/FAILED hanya berdasarkan query string.

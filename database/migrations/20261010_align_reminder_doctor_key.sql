@@ -7,5 +7,4 @@
 
 ALTER TABLE reminders
     DROP FOREIGN KEY fk_reminder_doctor,
-    MODIFY COLUMN doctor_id VARCHAR(50) NOT NULL,
-    ADD KEY idx_reminder_doctor (doctor_id);
+    MODIFY COLUMN doctor_id VARCHAR(50) NOT NULL;

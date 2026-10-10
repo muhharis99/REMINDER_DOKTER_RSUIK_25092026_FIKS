@@ -24,9 +24,9 @@ let shutdownInProgress = false;
 
 const pendingOutgoingSends = new Map();
 
-const SEND_TIMEOUT_MS = 5000;
-const ACK_VERIFY_TIMEOUT_MS = 1500;
-const ACK_VERIFY_INTERVAL_MS = 250;
+const SEND_TIMEOUT_MS = 15000;
+const ACK_VERIFY_TIMEOUT_MS = 5000;
+const ACK_VERIFY_INTERVAL_MS = 500;
 
 const timeFormatter = new Intl.DateTimeFormat('id-ID', {
     timeZone: 'Asia/Jakarta',
@@ -155,6 +155,16 @@ function extractMessageId(message) {
     }
 
     return null;
+}
+
+function ackLabel(ack) {
+    const value = Number(ack);
+
+    if (value >= 3) return 'READ';
+    if (value >= 2) return 'DELIVERED';
+    if (value >= 1) return 'SERVER_ACCEPTED';
+
+    return 'UNKNOWN';
 }
 
 function normalizePhone(value) {

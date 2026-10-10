@@ -109,15 +109,11 @@ Endpoint pengiriman gateway sekarang **fail-closed**: `POST /send` ditolak jika 
 
 ### Migrasi database pengiriman
 
-Sebelum kode baru digunakan, buat backup database aplikasi dan periksa bahwa tabel `reminders` memiliki struktur yang sesuai. Jalankan sekali, setelah review manual, migrasi:
+**Instalasi baru:** impor versi terbaru `database/schema.sql`. Skema tersebut sudah memuat kolom tracking dan status `PROCESSING`/`UNKNOWN`; jangan jalankan migrasi tracking lagi pada database yang baru dibuat dari skema terbaru.
 
-```text
-database/migrations/20261010_add_reminder_delivery_tracking.sql
-```
+**Database yang sudah ada:** sebelum mengubah apa pun, buat backup, jalankan `SHOW CREATE TABLE reminders;`, periksa daftar status/kolom/index yang sudah ada, serta sesuaikan migrasi bila struktur aktual berbeda. Jika tabel belum mempunyai kolom tracking, tinjau lalu jalankan sekali `database/migrations/20261010_add_reminder_delivery_tracking.sql`. Jangan menjalankan ulang migrasi yang sama atau menjalankannya pada database yang sudah memakai skema terbaru.
 
-Migrasi menambah status `PROCESSING` dan `UNKNOWN`, ID permintaan, ACK, serta kolom pelacakan. Migrasi tidak dijalankan otomatis oleh aplikasi. Jika tabel produksi berbeda dari skema yang didokumentasikan, sesuaikan migrasi terlebih dahulu; jangan jalankan langsung secara membabi buta. Simpan backup untuk pemulihan.
-
-**Peringatan kompatibilitas skema dokter:** instalasi lama dari versi `schema.sql` sebelumnya dapat memiliki `reminders.doctor_id INT UNSIGNED` dan foreign key `fk_reminder_doctor`. Kode aplikasi yang diaudit menyimpan kode dokter eksternal berbentuk string. Periksa `SHOW CREATE TABLE reminders;` dan `SHOW CREATE TABLE doctors;` terlebih dahulu. Hanya jika struktur benar-benar cocok dengan skema lama tersebut, tinjau `database/migrations/20261010_align_reminder_doctor_key.sql` sebagai migrasi terpisah. Migrasi itu mengubah tipe kunci tetapi tidak bisa secara otomatis memetakan ID dokter lokal ke `dokter_kd` eksternal; rekonsiliasi nilai `doctor_id` existing secara manual sebelum penggunaan produksi.
+**Peringatan kompatibilitas skema dokter:** kode aplikasi menyimpan kode dokter eksternal sebagai string. Database lama yang benar-benar dibuat memakai skema contoh terdahulu mungkin masih memakai `reminders.doctor_id INT UNSIGNED` dan foreign key `fk_reminder_doctor`. Periksa `SHOW CREATE TABLE reminders;` dan `SHOW CREATE TABLE doctors;`. Hanya jika struktur persis sama dengan skema lama tersebut, tinjau `database/migrations/20261010_align_reminder_doctor_key.sql` sebagai migrasi terpisah. Migrasi ini mengubah tipe key, tetapi tidak secara otomatis memetakan ID dokter lokal ke `dokter_kd` eksternal. Rekonsiliasi data lama secara manual sebelum penggunaan produksi; jangan jalankan jika nama foreign key atau tipe kolom berbeda.
 
 Tambahkan cron rekonsiliasi setiap 5 menit (sesuaikan path PHP dan direktori instalasi):
 

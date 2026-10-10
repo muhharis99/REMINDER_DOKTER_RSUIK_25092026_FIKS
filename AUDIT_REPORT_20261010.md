@@ -9,7 +9,7 @@ Branch `main`: tidak diubah dan belum di-merge.
 
 Audit dilakukan pada source repository PHP native + MariaDB/MySQL/PDO + Node.js `whatsapp-web.js`. Perbaikan sekarang mencakup jalur pengiriman yang terautentikasi, ID korelasi dan deduplikasi, callback status, polling dashboard, status `UNKNOWN` untuk hasil ambigu, perlindungan QR, konfigurasi lokal tanpa kredensial hard-coded, migrasi database terpisah, regresi tests, dan GitHub Actions.
 
-**Yang sudah dibuktikan:** GitHub Actions berhasil menjalankan `npm ci`, pemeriksaan sintaks Node.js, 15 pemeriksaan regresi, dan lint sintaks PHP pada commit audit sebelumnya yang berisi seluruh alur utama. Setelah perubahan dokumentasi dan migrasi SQL kecil berikutnya, workflow kembali dijalankan pada head terbaru; lihat tautan Actions di PR untuk hasil head terbaru.
+**Yang sudah dibuktikan:** GitHub Actions berhasil menjalankan `npm ci`, pemeriksaan sintaks Node.js, pemeriksaan regresi, dan lint sintaks PHP pada beberapa commit audit. Setelah perubahan terakhir, workflow otomatis berjalan ulang pada head terbaru; lihat tautan Actions di PR untuk hasil akhir. Setelah perubahan dokumentasi dan migrasi SQL kecil berikutnya, workflow kembali dijalankan pada head terbaru; lihat tautan Actions di PR untuk hasil head terbaru.
 
 **Yang belum dibuktikan:** koneksi database rumah sakit yang sebenarnya, scan QR pada perangkat, pemulihan sesi live, pengiriman ke nomor uji, cron di server, dan pengujian beban/jaringan. Tidak ada migrasi yang dijalankan dan tidak ada pesan produksi yang dikirim dari proses audit ini.
 

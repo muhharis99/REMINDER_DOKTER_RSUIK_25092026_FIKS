@@ -553,10 +553,10 @@ $encodedFilterQuery = htmlspecialchars($filterQuery, ENT_QUOTES, 'UTF-8');
 
                         if (result.queued) {
                             await Swal.fire({
-                                icon: 'success',
+                                icon: 'info',
                                 title: 'Permintaan Diteruskan',
-                                text: 'Pesan untuk ' + phone + ' sudah diteruskan ke WhatsApp Gateway.',
-                                timer: 1200,
+                                text: 'Gateway menerima permintaan. Status akhir pengiriman belum dikonfirmasi oleh dashboard.',
+                                timer: 1800,
                                 showConfirmButton: false,
                                 allowOutsideClick: false
                             });

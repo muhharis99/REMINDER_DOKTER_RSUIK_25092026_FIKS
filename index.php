@@ -372,7 +372,6 @@ $encodedFilterQuery = htmlspecialchars($filterQuery, ENT_QUOTES, 'UTF-8');
 
     <script>
         
-const gatewayBaseUrl = 'http://' + window.location.hostname + ':3210';
 const gatewayLink = document.getElementById('gatewayLink');
 const gatewayStatus = document.getElementById('gatewayStatus');
 const gatewayDot = document.getElementById('gatewayDot');
@@ -380,7 +379,7 @@ const scheduleDate = document.getElementById('scheduleDate');
 const scheduleDateButton = document.getElementById('scheduleDateButton');
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-gatewayLink.href = gatewayBaseUrl + '/';
+gatewayLink.href = 'gateway_qr.php';
 
 const scheduleDatePicker = flatpickr(scheduleDate, {
     dateFormat: 'd-m-Y',

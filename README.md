@@ -59,7 +59,7 @@ Alur sekarang:
 3. Petugas menekan tombol **Kirim WhatsApp**.
 4. Browser melakukan `POST /send` ke service Node.js.
 5. `whatsapp-web.js` memeriksa nomor WhatsApp lalu menjalankan `client.sendMessage()`.
-6. Jika berhasil, status reminder otomatis menjadi `SENT` dan waktu `sent_at` dicatat.
+6. Gateway mengembalikan `202 Accepted` ketika permintaan diterima untuk diproses di background. Respons `202` belum membuktikan pesan terkirim; ACK dicatat pada log gateway, tetapi hasil ACK belum otomatis memperbarui status reminder di database PHP.
 7. Jika gagal, status reminder menjadi `FAILED`.
 
 Tidak ada lagi proses membuka WhatsApp Web dan menekan tombol Send secara manual.

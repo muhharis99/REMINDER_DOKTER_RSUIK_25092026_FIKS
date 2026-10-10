@@ -52,7 +52,7 @@ test('send endpoint uses authenticated server-to-server API and delivery callbac
     assert.match(server, /app\.post\('\/send', requireGatewayApiToken,/);
     assert.match(server, /if \(!WA_CALLBACK_URL \|\| !WA_CALLBACK_TOKEN\)/);
     assert.match(server, /await finishDelivery\(requestId,\s*\{\s*status: 'UNKNOWN'/);
-    assert.match(server, /activeChatSends/);
+    assert.match(server, /activeRecipientSends/);
     assert.match(server, /app\.get\('\/send-status\/:requestId', requireGatewayApiToken/);
 });
 

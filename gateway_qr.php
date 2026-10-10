@@ -57,7 +57,7 @@ declare(strict_types=1);
                 statusNode.className = 'text-success fw-semibold';
                 containerNode.classList.add('d-none');
                 helpNode.textContent = 'Sesi WhatsApp aktif. QR tidak diperlukan.';
-            } else if (data.hasQr && typeof data.qr === 'string' && data.qr.startsWith('data:image/')) {
+            } else if (data.hasQr && typeof data.qr === 'string' && data.qr.startsWith('data:image/png;base64,')) {
                 statusNode.textContent = 'Pindai QR melalui WhatsApp > Perangkat tertaut.';
                 statusNode.className = 'text-success fw-semibold';
                 if (lastQr !== data.qr) {

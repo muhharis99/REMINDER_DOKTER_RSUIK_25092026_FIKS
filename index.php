@@ -54,62 +54,6 @@ $filterQuery = http_build_query([
     'poli' => $poliFilter
 ]);
 
-if (isset($_GET['action'], $_GET['id'])) {
-    $id = (int) $_GET['id'];
-    $action = $_GET['action'];
-
-    if (in_array($action, ['opened', 'sent', 'failed'], true)) {
-        $status = strtoupper($action);
-
-        if ($action === 'opened') {
-            $sql = "
-                UPDATE reminders
-                SET
-                    status = ?,
-                    opened_at = ?
-                WHERE id = ?
-            ";
-
-            $params = [
-                $status,
-                date('Y-m-d H:i:s'),
-                $id
-            ];
-        } elseif ($action === 'sent') {
-            $sql = "
-                UPDATE reminders
-                SET
-                    status = ?,
-                    sent_at = ?
-                WHERE id = ?
-            ";
-
-            $params = [
-                $status,
-                date('Y-m-d H:i:s'),
-                $id
-            ];
-        } else {
-            $sql = "
-                UPDATE reminders
-                SET status = ?
-                WHERE id = ?
-            ";
-
-            $params = [
-                $status,
-                $id
-            ];
-        }
-
-        $pdo->prepare($sql)->execute($params);
-        logAction($id, $status);
-    }
-
-    header('Location: index.php?' . $filterQuery);
-    exit;
-}
-
 $rows = schedulesFor($date);
 
 $rows = array_values(
@@ -172,7 +116,9 @@ $counts = [
     'SENT' => 0,
     'FAILED' => 0,
     'READY' => 0,
-    'OPENED' => 0
+    'OPENED' => 0,
+    'PROCESSING' => 0,
+    'UNKNOWN' => 0
 ];
 
 foreach ($byDoctor as $group) {
@@ -323,6 +269,8 @@ $encodedFilterQuery = htmlspecialchars($filterQuery, ENT_QUOTES, 'UTF-8');
             <div class="col-6 col-lg"><div class="card shadow-sm border-0 h-100"><div class="card-body"><div class="text-secondary small">SUDAH DIKIRIM</div><div class="display-6 fw-bold text-success"><?= $counts['SENT'] ?></div></div></div></div>
             <div class="col-6 col-lg"><div class="card shadow-sm border-0 h-100"><div class="card-body"><div class="text-secondary small">BELUM DIKIRIM</div><div class="display-6 fw-bold text-warning"><?= ($counts['READY'] ?? 0) + ($counts['OPENED'] ?? 0) ?></div></div></div></div>
             <div class="col-6 col-lg"><div class="card shadow-sm border-0 h-100"><div class="card-body"><div class="text-secondary small">GAGAL</div><div class="display-6 fw-bold text-danger"><?= $counts['FAILED'] ?></div></div></div></div>
+            <div class="col-6 col-lg"><div class="card shadow-sm border-0 h-100"><div class="card-body"><div class="text-secondary small">DIPROSES</div><div class="display-6 fw-bold text-info"><?= $counts['PROCESSING'] ?></div></div></div></div>
+            <div class="col-6 col-lg"><div class="card shadow-sm border-0 h-100"><div class="card-body"><div class="text-secondary small">PERLU VERIFIKASI</div><div class="display-6 fw-bold text-warning"><?= $counts['UNKNOWN'] ?></div></div></div></div>
         </div>
 
         <?php if ($next): ?>
@@ -362,6 +310,8 @@ $encodedFilterQuery = htmlspecialchars($filterQuery, ENT_QUOTES, 'UTF-8');
                     'SENT' => 'text-bg-success',
                     'FAILED' => 'text-bg-danger',
                     'OPENED' => 'text-bg-primary',
+                    'PROCESSING' => 'text-bg-info',
+                    'UNKNOWN' => 'text-bg-warning',
                     default => 'text-bg-secondary'
                 };
                 ?>
@@ -395,7 +345,7 @@ $encodedFilterQuery = htmlspecialchars($filterQuery, ENT_QUOTES, 'UTF-8');
                                 <div class="d-flex flex-wrap gap-2 mt-auto">
                                     <a class="btn btn-outline-secondary btn-sm" target="_blank" href="preview.php?id=<?= (int) $reminder['id'] ?>">Preview</a>
                                     <?php if ($phone !== '' && $message !== ''): ?>
-                                        <button type="button" class="btn btn-success btn-sm js-whatsapp" data-phone="<?= e($phone) ?>" data-message="<?= e($message) ?>" data-reminder-id="<?= (int) $reminder['id'] ?>" data-doctor-name="<?= e($doctor['nama_dokter']) ?>"><?= $status === 'SENT' ? 'Kirim Ulang WhatsApp' : 'Kirim WhatsApp' ?></button>
+                                        <button type="button" class="btn btn-success btn-sm js-whatsapp" data-phone="<?= e($phone) ?>" data-message="<?= e($message) ?>" data-reminder-id="<?= (int) $reminder['id'] ?>" data-reminder-status="<?= e($status) ?>" data-doctor-name="<?= e($doctor['nama_dokter']) ?>" <?= in_array($status, ['PROCESSING', 'UNKNOWN'], true) ? 'disabled' : '' ?>><?= $status === 'PROCESSING' ? 'Sedang Diproses' : ($status === 'UNKNOWN' ? 'Periksa Riwayat Dulu' : ($status === 'SENT' ? 'Kirim Ulang WhatsApp' : 'Kirim WhatsApp')) ?></button>
                                     <?php else: ?>
                                         <span class="text-danger small align-self-center">Nomor WhatsApp tidak tersedia</span>
                                     <?php endif; ?>
@@ -421,177 +371,237 @@ $encodedFilterQuery = htmlspecialchars($filterQuery, ENT_QUOTES, 'UTF-8');
     <script src="assets/back-to-top.js"></script>
 
     <script>
-        const gatewayBaseUrl = 'http://' + window.location.hostname + ':3210';
-        const gatewayLink = document.getElementById('gatewayLink');
-        const gatewayStatus = document.getElementById('gatewayStatus');
-        const gatewayDot = document.getElementById('gatewayDot');
-        const scheduleDate = document.getElementById('scheduleDate');
-        const scheduleDateButton = document.getElementById('scheduleDateButton');
+        
+const gatewayBaseUrl = 'http://' + window.location.hostname + ':3210';
+const gatewayLink = document.getElementById('gatewayLink');
+const gatewayStatus = document.getElementById('gatewayStatus');
+const gatewayDot = document.getElementById('gatewayDot');
+const scheduleDate = document.getElementById('scheduleDate');
+const scheduleDateButton = document.getElementById('scheduleDateButton');
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-        gatewayLink.href = gatewayBaseUrl + '/';
+gatewayLink.href = gatewayBaseUrl + '/';
 
-        const scheduleDatePicker = flatpickr(scheduleDate, {
-            dateFormat: 'd-m-Y',
-            defaultDate: scheduleDate.value,
-            allowInput: true,
-            locale: 'id',
-            disableMobile: true
-        });
+const scheduleDatePicker = flatpickr(scheduleDate, {
+    dateFormat: 'd-m-Y',
+    defaultDate: scheduleDate.value,
+    allowInput: true,
+    locale: 'id',
+    disableMobile: true
+});
 
-        scheduleDateButton.addEventListener('click', function () {
-            scheduleDatePicker.open();
-        });
+scheduleDateButton.addEventListener('click', function () {
+    scheduleDatePicker.open();
+});
 
-        async function refreshGatewayStatus() {
-            try {
-                const response = await fetch(gatewayBaseUrl + '/status', { cache: 'no-store' });
-                const data = await response.json();
+async function refreshGatewayStatus() {
+    try {
+        const response = await fetch('gateway_proxy.php?action=status', { cache: 'no-store' });
+        const data = await response.json();
 
-                if (data.ready) {
-                    gatewayStatus.textContent = 'WhatsApp Gateway READY';
-                    gatewayDot.className = 'gateway-dot ready';
-                    return;
-                }
-
-                if (data.hasQr) {
-                    gatewayStatus.textContent = 'QR tersedia - scan WhatsApp terlebih dahulu';
-                    gatewayDot.className = 'gateway-dot';
-                    return;
-                }
-
-                gatewayStatus.textContent = 'WhatsApp Gateway: ' + (data.state || 'belum siap');
-                gatewayDot.className = 'gateway-dot';
-            } catch (error) {
-                gatewayStatus.textContent = 'WhatsApp Gateway tidak aktif. Jalankan: npm start';
-                gatewayDot.className = 'gateway-dot error';
-            }
+        if (data.ready) {
+            gatewayStatus.textContent = 'WhatsApp Gateway READY';
+            gatewayDot.className = 'gateway-dot ready';
+            return;
         }
 
-        document.addEventListener('DOMContentLoaded', function () {
-            $('.select2-filter').each(function () {
-                const select = $(this);
+        if (data.hasQr) {
+            gatewayStatus.textContent = 'QR tersedia - scan WhatsApp terlebih dahulu';
+            gatewayDot.className = 'gateway-dot';
+            return;
+        }
 
-                select.select2({
-                    theme: 'bootstrap-5',
-                    width: '100%',
-                    placeholder: select.data('placeholder'),
-                    allowClear: true,
-                    language: {
-                        noResults: function () {
-                            return 'Data tidak ditemukan';
-                        }
-                    }
-                });
-            });
+        gatewayStatus.textContent = 'WhatsApp Gateway: ' + (data.state || 'belum siap');
+        gatewayDot.className = 'gateway-dot' + (response.ok ? '' : ' error');
+    } catch (error) {
+        gatewayStatus.textContent = 'Status WhatsApp Gateway belum dapat diperiksa.';
+        gatewayDot.className = 'gateway-dot error';
+    }
+}
 
-            refreshGatewayStatus();
-            setInterval(refreshGatewayStatus, 5000);
+async function fetchDeliveryStatus(reminderId) {
+    const response = await fetch(
+        'gateway_proxy.php?action=delivery&reminder_id=' + encodeURIComponent(reminderId),
+        { cache: 'no-store' }
+    );
+    const data = await response.json();
+    if (!response.ok || !data.success) {
+        throw new Error(data.message || 'Status pengiriman belum dapat diperiksa.');
+    }
+    return data;
+}
 
-            document.querySelectorAll('.js-whatsapp').forEach(function (button) {
-                button.addEventListener('click', async function () {
-                    const phone = this.dataset.phone;
-                    const message = this.dataset.message;
-                    const reminderId = this.dataset.reminderId;
-                    const doctorName = this.dataset.doctorName || 'dokter';
-                    const originalText = this.textContent;
+async function waitForDelivery(reminderId, maxChecks = 30) {
+    for (let attempt = 0; attempt < maxChecks; attempt++) {
+        try {
+            const data = await fetchDeliveryStatus(reminderId);
+            if (['SENT', 'FAILED', 'UNKNOWN'].includes(String(data.status || '').toUpperCase())) {
+                return data;
+            }
+            if (['READY', 'OPENED'].includes(String(data.status || '').toUpperCase()) && !data.request_id) {
+                return data;
+            }
+        } catch (error) {
+            // A temporary polling error is not evidence that the message failed.
+        }
+        await delay(1500);
+    }
+    return fetchDeliveryStatus(reminderId).catch(() => ({
+        success: false,
+        status: 'PROCESSING',
+        reminder_id: reminderId,
+        error: null
+    }));
+}
 
-                    if (!phone || !message || !reminderId) {
-                        await Swal.fire({
-                            icon: 'warning',
-                            title: 'Data belum lengkap',
-                            text: 'Data WhatsApp belum lengkap.',
-                            confirmButtonText: 'OK',
-                            confirmButtonColor: '#198754'
-                        });
-                        return;
-                    }
-
-                    const confirmation = await Swal.fire({
-                        icon: 'question',
-                        title: 'Kirim WhatsApp?',
-                        html: 'Apakah reminder benar akan dikirim ke <strong>' + doctorName + '</strong><br>Nomor: <strong>' + phone + '</strong>?',
-                        showCancelButton: true,
-                        confirmButtonText: 'Ya, Kirim',
-                        cancelButtonText: 'Tidak',
-                        confirmButtonColor: '#198754',
-                        cancelButtonColor: '#6c757d',
-                        reverseButtons: true,
-                        focusCancel: true
-                    });
-
-                    if (!confirmation.isConfirmed) {
-                        return;
-                    }
-
-                    this.disabled = true;
-                    this.textContent = 'Mengirim...';
-
-                    Swal.fire({
-                        title: 'Mengirim WhatsApp',
-                        text: 'Mohon tunggu...',
-                        allowOutsideClick: false,
-                        allowEscapeKey: false,
-                        didOpen: function () {
-                            Swal.showLoading();
-                        }
-                    });
-
-                    try {
-                        const response = await fetch(gatewayBaseUrl + '/send', {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json'
-                            },
-                            body: JSON.stringify({ phone, message })
-                        });
-
-                        const result = await response.json();
-
-                        if (!response.ok || !result.success) {
-                            throw new Error(result.message || 'Gagal mengirim WhatsApp.');
-                        }
-
-                        if (result.queued) {
-                            await Swal.fire({
-                                icon: 'info',
-                                title: 'Permintaan Diteruskan',
-                                text: 'Gateway menerima permintaan. Status akhir pengiriman belum dikonfirmasi oleh dashboard.',
-                                timer: 1800,
-                                showConfirmButton: false,
-                                allowOutsideClick: false
-                            });
-
-                            window.location.href = 'index.php?<?= $encodedFilterQuery ?>';
-                            return;
-                        }
-
-                        await Swal.fire({
-                            icon: 'success',
-                            title: 'Berhasil',
-                            text: 'WhatsApp berhasil dikirim ke ' + phone + '.',
-                            confirmButtonText: 'OK',
-                            confirmButtonColor: '#198754'
-                        });
-
-                        window.location.href = 'index.php?<?= $encodedFilterQuery ?>' + '&action=sent&id=' + encodeURIComponent(reminderId);
-
-                                            } catch (error) {
-                        await Swal.fire({
-                            icon: 'error',
-                            title: 'Gagal Mengirim',
-                            text: error.message || 'Gagal menghubungi WhatsApp Gateway.',
-                            confirmButtonText: 'OK',
-                            confirmButtonColor: '#dc3545'
-                        });
-
-                        window.location.href = 'index.php?<?= $encodedFilterQuery ?>' + '&action=failed&id=' + encodeURIComponent(reminderId);
-                    } finally {
-                        this.disabled = false;
-                        this.textContent = originalText;
-                    }
-                });
-            });
+document.addEventListener('DOMContentLoaded', function () {
+    $('.select2-filter').each(function () {
+        const select = $(this);
+        select.select2({
+            theme: 'bootstrap-5',
+            width: '100%',
+            placeholder: select.data('placeholder'),
+            allowClear: true,
+            language: {
+                noResults: function () {
+                    return 'Data tidak ditemukan';
+                }
+            }
         });
-    </script>
+    });
+
+    refreshGatewayStatus();
+    setInterval(refreshGatewayStatus, 5000);
+
+    document.querySelectorAll('.js-whatsapp').forEach(function (button) {
+        button.addEventListener('click', async function () {
+            const reminderId = Number(this.dataset.reminderId);
+            const doctorName = this.dataset.doctorName || 'dokter';
+            const reminderStatus = String(this.dataset.reminderStatus || 'READY').toUpperCase();
+            const originalText = this.textContent;
+            const allowResend = reminderStatus === 'SENT';
+
+            if (!Number.isSafeInteger(reminderId) || reminderId < 1) {
+                await Swal.fire({ icon: 'warning', title: 'Data belum lengkap', text: 'ID reminder tidak valid.' });
+                return;
+            }
+            if (reminderStatus === 'UNKNOWN' || reminderStatus === 'PROCESSING') {
+                await Swal.fire({
+                    icon: 'warning',
+                    title: reminderStatus === 'UNKNOWN' ? 'Perlu Verifikasi' : 'Masih Diproses',
+                    text: reminderStatus === 'UNKNOWN'
+                        ? 'Periksa riwayat WhatsApp sebelum mencoba lagi agar pesan tidak terkirim ganda.'
+                        : 'Permintaan masih diproses. Jangan mengirim ulang.'
+                });
+                return;
+            }
+
+            const confirmation = await Swal.fire({
+                icon: 'question',
+                title: allowResend ? 'Kirim Ulang WhatsApp?' : 'Kirim WhatsApp?',
+                html: 'Lanjutkan pengiriman reminder untuk <strong>' + doctorName + '</strong>?',
+                showCancelButton: true,
+                confirmButtonText: allowResend ? 'Ya, Kirim Ulang' : 'Ya, Kirim',
+                cancelButtonText: 'Batal',
+                confirmButtonColor: '#198754',
+                cancelButtonColor: '#6c757d',
+                reverseButtons: true,
+                focusCancel: true
+            });
+            if (!confirmation.isConfirmed) return;
+
+            this.disabled = true;
+            this.textContent = 'Mengirim...';
+            Swal.fire({
+                title: 'Mengirim WhatsApp',
+                text: 'Menunggu hasil gateway. Jangan menutup halaman dahulu.',
+                allowOutsideClick: false,
+                allowEscapeKey: false,
+                didOpen: function () { Swal.showLoading(); }
+            });
+
+            let accepted = false;
+            let sendError = null;
+            try {
+                const response = await fetch('gateway_proxy.php?action=send', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        reminder_id: reminderId,
+                        allow_resend: allowResend
+                    })
+                });
+                const result = await response.json();
+                if (response.status === 202 && result.success) {
+                    accepted = true;
+                } else if (result.status === 'PROCESSING' && result.request_id) {
+                    accepted = true;
+                } else {
+                    sendError = result.message || 'Permintaan pengiriman ditolak.';
+                }
+            } catch (error) {
+                // The HTTP response can be lost after the server accepted the request.
+                // Poll the persisted reminder state; never write FAILED from the browser.
+                accepted = true;
+                sendError = error.message || 'Respons gateway belum diterima.';
+            }
+
+            if (accepted) {
+                const result = await waitForDelivery(reminderId);
+                const status = String(result.status || 'UNKNOWN').toUpperCase();
+
+                if (status === 'SENT') {
+                    const ack = Number(result.ack || 0);
+                    await Swal.fire({
+                        icon: 'success',
+                        title: 'Konfirmasi Gateway Diterima',
+                        text: ack >= 2
+                            ? 'Gateway menerima status ACK tingkat ' + ack + '. Periksa detail status bila perlu.'
+                            : 'WhatsApp mengonfirmasi penerimaan di server. Ini bukan bukti pesan sudah dibaca.',
+                        confirmButtonText: 'OK'
+                    });
+                    window.location.reload();
+                } else if (status === 'FAILED') {
+                    await Swal.fire({
+                        icon: 'error',
+                        title: 'Pengiriman Gagal',
+                        text: result.error || sendError || 'Gateway mengonfirmasi bahwa pengiriman gagal.',
+                        confirmButtonText: 'OK'
+                    });
+                    window.location.reload();
+                } else if (status === 'UNKNOWN') {
+                    await Swal.fire({
+                        icon: 'warning',
+                        title: 'Hasil Belum Pasti',
+                        text: (result.error || sendError || 'Gateway belum dapat memastikan hasil pengiriman.') +
+                            ' Jangan kirim ulang sebelum memeriksa riwayat WhatsApp.',
+                        confirmButtonText: 'Saya Mengerti'
+                    });
+                    window.location.reload();
+                } else {
+                    await Swal.fire({
+                        icon: 'info',
+                        title: 'Masih Diproses',
+                        text: 'Belum ada status akhir dari gateway. Status disimpan sebagai proses aktif; jangan klik kirim ulang. Muat ulang dashboard untuk memeriksa kembali.',
+                        confirmButtonText: 'OK'
+                    });
+                    window.location.reload();
+                }
+            } else {
+                await Swal.fire({
+                    icon: 'error',
+                    title: 'Permintaan Ditolak',
+                    text: sendError || 'Gateway tidak menerima permintaan.',
+                    confirmButtonText: 'OK'
+                });
+                window.location.reload();
+            }
+
+            this.disabled = false;
+            this.textContent = originalText;
+        });
+    });
+});
+</script>
 </body>
 </html>

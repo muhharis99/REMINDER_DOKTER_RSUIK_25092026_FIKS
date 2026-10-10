@@ -26,11 +26,7 @@ http://localhost:3210
 
 Jika sesi WhatsApp belum tersedia, QR akan tampil di halaman tersebut. Scan menggunakan WhatsApp di HP melalui menu **Perangkat tertaut**. Session disimpan menggunakan `LocalAuth` pada folder `.wwebjs_auth`, sehingga normalnya QR cukup discan satu kali selama session tidak dihapus/logout.
 
-Status gateway dapat dicek di:
-
-```text
-http://localhost:3210/status
-```
+Status gateway dapat dilihat dari dashboard PHP. Endpoint internal `/status` dan `/qr` sekarang membutuhkan token server-to-server dan secara default hanya didengarkan pada `127.0.0.1:3210`; jangan membukanya langsung ke jaringan publik.
 
 ## 3. Jalankan aplikasi PHP
 
@@ -48,7 +44,7 @@ http://127.0.0.1:8000
 
 Jika menggunakan Apache/Laragon, buka URL project seperti biasa.
 
-Dashboard akan mengakses gateway pada port `3210` menggunakan hostname yang sama dengan halaman PHP. Jadi bila dashboard dibuka melalui `http://192.168.0.14/...`, gateway akan dipanggil melalui `http://192.168.0.14:3210`.
+Dashboard mengakses gateway melalui `gateway_proxy.php`, dan PHP berbicara ke gateway internal pada `http://127.0.0.1:3210`. Karena browser tidak mengakses port Node secara langsung, QR dan token server tidak perlu dipublikasikan kepada browser.
 
 ## Cara pengiriman
 
@@ -113,7 +109,7 @@ Atur environment variable di service manager atau terminal yang menjalankan gate
 - `WA_PORT`: tetap 3210 bila port existing belum ingin diubah.
 - `WA_GATEWAY_INTERNAL_URL` di konfigurasi PHP: default `http://127.0.0.1:3210`.
 
-Endpoint pengiriman gateway sekarang **fail-closed**: `POST /send` ditolak jika `WA_API_TOKEN`, `WA_CALLBACK_URL`, atau `WA_CALLBACK_TOKEN` belum diatur. Dashboard berkomunikasi melalui `gateway_proxy.php`, sehingga token tidak dikirim ke browser. Halaman QR tetap dapat dibuka langsung di port 3210 pada jaringan internal.
+Endpoint pengiriman gateway sekarang **fail-closed**: `POST /send` ditolak jika `WA_API_TOKEN`, `WA_CALLBACK_URL`, atau `WA_CALLBACK_TOKEN` belum diatur. Dashboard berkomunikasi melalui `gateway_proxy.php`, sehingga token tidak dikirim ke browser. QR diakses melalui `gateway_qr.php` pada aplikasi PHP. Root Node gateway sengaja tidak menampilkan QR, dan service bind ke loopback secara default; ubah `WA_HOST` hanya jika ada kebutuhan arsitektur yang sudah ditinjau.
 
 ### Migrasi database pengiriman
 

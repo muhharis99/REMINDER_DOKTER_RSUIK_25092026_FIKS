@@ -7,13 +7,13 @@ Aplikasi reminder jadwal praktik dokter dengan dashboard PHP dan pengiriman What
 Pastikan Node.js 18 atau lebih baru tersedia, lalu jalankan:
 
 ```bash
-npm install
+npm ci
 ```
 
 ## 2. Jalankan WhatsApp Gateway
 
 ```bash
-node server.js
+npm start
 ```
 
 Gateway berjalan di port `3210`.

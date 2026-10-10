@@ -98,3 +98,41 @@ test('manifest and lockfile resolve the same pinned WhatsApp fork', () => {
         'git+https://github.com/MySSoN/whatsapp-web.js.git#4d1f29e812a69776919f89c4eb380383dbca1136'
     );
 });
+
+test('fresh schema stores external doctor codes as strings', () => {
+    const schema = read('database/schema.sql');
+    const reminders = schema.slice(schema.indexOf('CREATE TABLE IF NOT EXISTS reminders'), schema.indexOf('CREATE TABLE IF NOT EXISTS reminder_logs'));
+    assert.match(reminders, /doctor_id VARCHAR\(50\) NOT NULL/);
+    assert.doesNotMatch(reminders, /FOREIGN KEY \(doctor_id\) REFERENCES doctors\(id\)/);
+    assert.match(reminders, /KEY idx_reminder_doctor \(doctor_id\)/);
+});
+
+test('direct gateway root does not expose QR and defaults to loopback', () => {
+    const server = read('server.js');
+    assert.match(server, /WA_HOST \|\| '127\.0\.0\.1'/);
+    assert.match(server, /app\.get\('\/', \(_req, res\) =>/);
+    assert.match(server, /app\.get\('\/qr', requireGatewayApiToken/);
+    assert.doesNotMatch(server.slice(server.indexOf("app.get('/',"), server.indexOf("app.get('/qr'")), /qrDataUrl/);
+});
+
+test('QR page calls same-origin proxy and accepts only PNG data URLs', () => {
+    const page = read('gateway_qr.php');
+    assert.match(page, /gateway_proxy\.php\?action=qr/);
+    assert.match(page, /data:image\/png;base64,/);
+    assert.doesNotMatch(page, /:3210/);
+});
+
+test('delivery proxy distinguishes config errors from ambiguous transport failures', () => {
+    const proxy = read('gateway_proxy.php');
+    assert.match(proxy, /configuration_error/);
+    assert.match(proxy, /Do not mark FAILED: the gateway may have accepted the request before the connection broke/);
+    assert.match(proxy, /return \['configuration_error'/);
+});
+
+test('optional schema alignment migration clearly guards the known FK schema', () => {
+    const migration = read('database/migrations/20261010_align_reminder_doctor_key.sql');
+    assert.match(migration, /Only for databases that match the older repository schema\.sql exactly/);
+    assert.match(migration, /SHOW CREATE TABLE reminders/);
+    assert.match(migration, /DROP FOREIGN KEY fk_reminder_doctor/);
+    assert.match(migration, /MODIFY COLUMN doctor_id VARCHAR\(50\) NOT NULL/);
+});

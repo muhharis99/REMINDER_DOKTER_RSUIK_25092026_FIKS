@@ -51,6 +51,7 @@ Alur sekarang:
 5. `whatsapp-web.js` memeriksa nomor WhatsApp lalu menjalankan `client.sendMessage()`.
 6. Gateway mengembalikan `202 Accepted` ketika permintaan mulai diproses. Status akhir dicatat ke database melalui callback terautentikasi dan rekonsiliasi polling. `SENT` berarti ada ACK server WhatsApp; itu bukan bukti pesan sudah sampai ke perangkat atau dibaca.
 7. Jika gateway memastikan permintaan gagal sebelum terkirim, status dicatat `FAILED`. Jika outcome tidak dapat dipastikan atau callback hilang, status menjadi `UNKNOWN`; jangan mengirim ulang sebelum memeriksa riwayat WhatsApp.
+8. Gateway hanya memproses satu pengiriman pada satu waktu karena memakai satu WhatsApp client. Jika sedang memproses pesan lain, permintaan baru ditolak; tunggu hasil pertama sebelum mencoba lagi.
 
 Tidak ada lagi proses membuka WhatsApp Web dan menekan tombol Send secara manual.
 

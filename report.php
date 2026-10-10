@@ -26,7 +26,7 @@ $endDate = parseReportDate($rawEndDate, date('Y-m-d'));
 $displayStartDate = date('d-m-Y', strtotime($startDate));
 $displayEndDate = date('d-m-Y', strtotime($endDate));
 
-$allowedStatuses = ['', 'PENDING', 'READY', 'OPENED', 'SENT', 'FAILED'];
+$allowedStatuses = ['', 'PENDING', 'READY', 'OPENED', 'PROCESSING', 'UNKNOWN', 'SENT', 'FAILED'];
 
 if (!in_array($status, $allowedStatuses, true)) {
     $status = '';
@@ -114,6 +114,8 @@ $summary = [
     'TOTAL' => count($rows),
     'SENT' => 0,
     'READY' => 0,
+    'PROCESSING' => 0,
+    'UNKNOWN' => 0,
     'FAILED' => 0
 ];
 
@@ -298,7 +300,7 @@ $pdfQuery = http_build_query([
                             data-placeholder="Semua Status"
                         >
                             <option value="">Semua Status</option>
-                            <?php foreach (['PENDING', 'READY', 'OPENED', 'SENT', 'FAILED'] as $item): ?>
+                            <?php foreach (['PENDING', 'READY', 'OPENED', 'PROCESSING', 'UNKNOWN', 'SENT', 'FAILED'] as $item): ?>
                                 <option
                                     value="<?= e($item) ?>"
                                     <?= $status === $item ? 'selected' : '' ?>
@@ -319,41 +321,23 @@ $pdfQuery = http_build_query([
         </div>
 
         <div class="row g-3 mb-3">
-            <div class="col-md-3">
-                <div class="card shadow-sm border-0 h-100">
-                    <div class="card-body py-3">
-                        <div class="text-secondary small">TOTAL</div>
-                        <div class="h3 fw-bold mb-0"><?= $summary['TOTAL'] ?></div>
+            <?php foreach ([
+                'TOTAL' => 'TOTAL',
+                'SENT' => 'SENT',
+                'READY' => 'READY',
+                'PROCESSING' => 'PROCESSING',
+                'UNKNOWN' => 'UNKNOWN',
+                'FAILED' => 'FAILED'
+            ] as $key => $label): ?>
+                <div class="col-6 col-md-2">
+                    <div class="card shadow-sm border-0 h-100">
+                        <div class="card-body py-3">
+                            <div class="text-secondary small"><?= e($label) ?></div>
+                            <div class="h3 fw-bold mb-0"><?= (int) ($summary[$key] ?? 0) ?></div>
+                        </div>
                     </div>
                 </div>
-            </div>
-
-            <div class="col-md-3">
-                <div class="card shadow-sm border-0 h-100">
-                    <div class="card-body py-3">
-                        <div class="text-secondary small">SENT</div>
-                        <div class="h3 fw-bold mb-0"><?= $summary['SENT'] ?></div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="col-md-3">
-                <div class="card shadow-sm border-0 h-100">
-                    <div class="card-body py-3">
-                        <div class="text-secondary small">READY</div>
-                        <div class="h3 fw-bold mb-0"><?= $summary['READY'] ?></div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="col-md-3">
-                <div class="card shadow-sm border-0 h-100">
-                    <div class="card-body py-3">
-                        <div class="text-secondary small">FAILED</div>
-                        <div class="h3 fw-bold mb-0"><?= $summary['FAILED'] ?></div>
-                    </div>
-                </div>
-            </div>
+            <?php endforeach; ?>
         </div>
 
         <div class="card shadow-sm border-0">
@@ -381,7 +365,7 @@ $pdfQuery = http_build_query([
                                     <td><?= e(reportDoctorName($row['doctor_id'])) ?></td>
                                     <td><?= e($row['reminder_type']) ?></td>
                                     <td>
-                                        <span class="badge <?= $row['status'] === 'SENT' ? 'text-bg-success' : ($row['status'] === 'FAILED' ? 'text-bg-danger' : 'text-bg-secondary') ?>">
+                                        <span class="badge <?= $row['status'] === 'SENT' ? 'text-bg-success' : ($row['status'] === 'FAILED' ? 'text-bg-danger' : ($row['status'] === 'UNKNOWN' ? 'text-bg-warning' : ($row['status'] === 'PROCESSING' ? 'text-bg-info' : 'text-bg-secondary'))) ?>">
                                             <?= e($row['status']) ?>
                                         </span>
                                     </td>

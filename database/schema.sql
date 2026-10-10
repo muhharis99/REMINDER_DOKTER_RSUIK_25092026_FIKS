@@ -33,16 +33,24 @@ CREATE TABLE IF NOT EXISTS schedules (
 
 CREATE TABLE IF NOT EXISTS reminders (
   id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  doctor_id INT UNSIGNED NOT NULL,
+  doctor_id VARCHAR(50) NOT NULL,
   tanggal DATE NOT NULL,
   reminder_type VARCHAR(30) NOT NULL DEFAULT 'HARI_INI',
   message TEXT NOT NULL,
-  status ENUM('PENDING','READY','OPENED','SENT','FAILED') NOT NULL DEFAULT 'READY',
+  status ENUM('PENDING','READY','OPENED','PROCESSING','UNKNOWN','SENT','FAILED') NOT NULL DEFAULT 'READY',
   opened_at DATETIME NULL,
   sent_at DATETIME NULL,
+  gateway_request_id CHAR(36) NULL,
+  gateway_message_id VARCHAR(255) NULL,
+  gateway_ack TINYINT UNSIGNED NULL,
+  delivery_error VARCHAR(500) NULL,
+  delivery_started_at DATETIME NULL,
+  delivery_updated_at DATETIME NULL,
   created_at DATETIME NOT NULL,
   UNIQUE KEY uq_reminder (tanggal, doctor_id, reminder_type),
-  CONSTRAINT fk_reminder_doctor FOREIGN KEY (doctor_id) REFERENCES doctors(id)
+  UNIQUE KEY uq_reminders_gateway_request_id (gateway_request_id),
+  KEY idx_reminders_delivery (status, delivery_updated_at),
+  KEY idx_reminder_doctor (doctor_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS reminder_logs (

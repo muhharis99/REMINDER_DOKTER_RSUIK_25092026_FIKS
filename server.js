@@ -1,15 +1,14 @@
 const express = require('express');
-const cors = require('cors');
 const QRCode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
 const { Client, LocalAuth } = require('whatsapp-web.js');
+const { ackLabel, normalizePhone, isValidIndonesianPhone, maskPhone, tokenEquals } = require('./lib/gateway-utils');
 
 const app = express();
 const PORT = Number(process.env.WA_PORT || 3210);
-const HOST = process.env.WA_HOST || '0.0.0.0';
+const HOST = process.env.WA_HOST || '127.0.0.1';
 app.disable('x-powered-by');
-app.use(cors());
 app.use(express.json({ limit: '128kb' }));
 
 let waState = 'STARTING';
@@ -22,11 +21,21 @@ let readyWatchdogTimer = null;
 let authenticatedAt = 0;
 let shutdownInProgress = false;
 
-const pendingOutgoingSends = new Map();
 
-const SEND_TIMEOUT_MS = 5000;
-const ACK_VERIFY_TIMEOUT_MS = 1500;
-const ACK_VERIFY_INTERVAL_MS = 250;
+const pendingOutgoingSends = new Map();
+const deliveryJobs = new Map();
+const activeReminderSends = new Map();
+const activeChatSends = new Map();
+let activeGatewaySendRequest = null;
+
+const WA_API_TOKEN = String(process.env.WA_API_TOKEN || '').trim();
+const WA_CALLBACK_URL = String(process.env.WA_CALLBACK_URL || '').trim();
+const WA_CALLBACK_TOKEN = String(process.env.WA_CALLBACK_TOKEN || '').trim();
+const DELIVERY_CALLBACK_TIMEOUT_MS = 5000;
+
+const SEND_TIMEOUT_MS = 15000;
+const ACK_VERIFY_TIMEOUT_MS = 5000;
+const ACK_VERIFY_INTERVAL_MS = 500;
 
 const timeFormatter = new Intl.DateTimeFormat('id-ID', {
     timeZone: 'Asia/Jakarta',
@@ -155,20 +164,6 @@ function extractMessageId(message) {
     }
 
     return null;
-}
-
-function normalizePhone(value) {
-    let phone = String(value || '').replace(/\D+/g, '');
-
-    if (phone.startsWith('0')) {
-        phone = '62' + phone.slice(1);
-    }
-
-    return phone;
-}
-
-function isValidIndonesianPhone(value) {
-    return /^62\d{8,15}$/.test(normalizePhone(value));
 }
 
 function clearReadyWatchdog() {
@@ -318,6 +313,113 @@ async function initializeWhatsApp(reason = 'startup') {
     }
 }
 
+
+
+function requireGatewayApiToken(req, res, next) {
+    if (!WA_API_TOKEN) {
+        return res.status(503).json({
+            success: false,
+            message: 'WA_API_TOKEN belum dikonfigurasi pada service gateway.'
+        });
+    }
+
+    const authorization = String(req.get('authorization') || '');
+    const supplied = authorization.startsWith('Bearer ')
+        ? authorization.slice(7).trim()
+        : '';
+
+    if (!tokenEquals(supplied, WA_API_TOKEN)) {
+        return res.status(401).json({
+            success: false,
+            message: 'Autentikasi gateway tidak valid.'
+        });
+    }
+
+    return next();
+}
+
+async function notifyDeliveryResult(job, result) {
+    if (!WA_CALLBACK_URL || !WA_CALLBACK_TOKEN) {
+        console.error('Delivery callback tidak dikonfigurasi; status DB belum dapat disinkronkan.');
+        return false;
+    }
+
+    let callbackUrl;
+    try {
+        callbackUrl = new URL(WA_CALLBACK_URL);
+        if (!['http:', 'https:'].includes(callbackUrl.protocol)) {
+            throw new Error('Protokol callback tidak didukung');
+        }
+    } catch (error) {
+        console.error('WA_CALLBACK_URL tidak valid.');
+        return false;
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), DELIVERY_CALLBACK_TIMEOUT_MS);
+
+    try {
+        const response = await fetch(callbackUrl, {
+            method: 'POST',
+            headers: {
+                'Authorization': 'Bearer ' + WA_CALLBACK_TOKEN,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                request_id: job.requestId,
+                reminder_id: job.reminderId,
+                status: result.status,
+                message_id: result.messageId || null,
+                ack: Number.isFinite(Number(result.ack)) ? Number(result.ack) : null,
+                error: String(result.error || '').slice(0, 450) || null
+            }),
+            signal: controller.signal
+        });
+
+        if (!response.ok) {
+            console.error(`Delivery callback ditolak: HTTP ${response.status}; request_id=${job.requestId}`);
+            return false;
+        }
+
+        return true;
+    } catch (error) {
+        console.error(`Delivery callback gagal; request_id=${job.requestId}; alasan=${error.name === 'AbortError' ? 'timeout' : (error.message || 'network error')}`);
+        return false;
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
+async function finishDelivery(requestId, result) {
+    const job = deliveryJobs.get(requestId);
+    if (!job || job.status !== 'PROCESSING') return;
+
+    job.status = result.status;
+    job.ack = Number.isFinite(Number(result.ack)) ? Number(result.ack) : null;
+    job.messageId = result.messageId || null;
+    job.error = String(result.error || '').slice(0, 450) || null;
+    job.updatedAt = new Date().toISOString();
+    job.callbackDelivered = await notifyDeliveryResult(job, result);
+
+    if (activeReminderSends.get(String(job.reminderId)) === requestId) {
+        activeReminderSends.delete(String(job.reminderId));
+    }
+    if (job.phone && activeChatSends.get(String(job.phone)) === requestId) {
+        activeChatSends.delete(String(job.phone));
+    }
+    if (activeGatewaySendRequest === requestId) {
+        activeGatewaySendRequest = null;
+    }
+
+    // Keep a bounded in-memory status window for polling if the PHP callback is late.
+    const completed = [...deliveryJobs.entries()]
+        .filter(([, item]) => item.status !== 'PROCESSING')
+        .sort((a, b) => String(a[1].updatedAt || a[1].createdAt).localeCompare(String(b[1].updatedAt || b[1].createdAt)));
+    while (completed.length > 500) {
+        const [oldRequestId] = completed.shift();
+        deliveryJobs.delete(oldRequestId);
+    }
+}
 
 function now() {
     return timeFormatter.format(new Date());
@@ -517,7 +619,7 @@ function captureOutgoingMessage(message) {
     candidate.tracker.messageId = messageId;
 
     console.log(
-        `[${now()}] OUTGOING_MESSAGE_CREATE MessageId=${messageId} To=${message?.to || message?._data?.to || '-'}`
+        `[${now()}] OUTGOING_MESSAGE_CREATE MessageId=${messageId} To=${maskPhone(message?.to || message?._data?.to || '-')}`
     );
 }
 
@@ -824,7 +926,7 @@ client.on('message_ack', (message, ack) => {
     const messageId = extractMessageId(message);
 
     console.log(
-        `[${now()}] MESSAGE_ACK MessageId=${messageId || '-'} Ack=${ack} To=${message?.to || message?._data?.to || '-'}`
+        `[${now()}] MESSAGE_ACK MessageId=${messageId || '-'} Ack=${ack} To=${maskPhone(message?.to || message?._data?.to || '-')}`
     );
 
     for (const [token, tracker] of pendingOutgoingSends.entries()) {
@@ -860,33 +962,25 @@ client.on('message_ack', (message, ack) => {
     }
 });
 
-app.get('/', (req, res) => {
-    const statusLabel = waState === 'READY'
-        ? 'WhatsApp Terhubung'
-        : waState === 'QR_READY'
-            ? 'Scan QR WhatsApp'
-            : 'Menyiapkan WhatsApp';
-
-    const qrSection = waState === 'QR_READY' && qrDataUrl
-        ? `<div class="mb-4"><img class="img-fluid border rounded-3 p-2 bg-white" src="${qrDataUrl}" alt="QR WhatsApp" width="240" height="240"></div><p class="text-secondary mb-0">Buka WhatsApp di HP, pilih Perangkat tertaut, lalu scan QR ini.</p>`
-        : '';
-
-    const readySection = waState === 'READY'
-        ? `<div class="display-3 text-success mb-3">✓</div><h2 class="h4 mb-2">WhatsApp siap digunakan</h2><p class="text-secondary mb-0">Dashboard PHP dapat mengirim pesan langsung melalui gateway ini.</p>`
-        : '';
-
-    const waitingSection = waState !== 'QR_READY' && waState !== 'READY'
-        ? `<h2 class="h4 mb-3">${statusLabel}</h2><p class="text-secondary mb-0">Status: <code>${waState}</code>. Halaman akan memperbarui otomatis.</p>`
-        : '';
-
-    const errorSection = lastError
-        ? `<div class="alert alert-danger mt-4 mb-0">${String(lastError).replace(/</g, '&lt;')}</div>`
-        : '';
-
-    res.send(`<!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>WhatsApp Gateway</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet"></head><body class="bg-body-tertiary"><main class="container py-5"><div class="row justify-content-center"><div class="col-12 col-md-8 col-lg-6"><div class="card shadow-sm border-0"><div class="card-body p-4 p-lg-5 text-center"><span class="badge text-bg-success-subtle text-success mb-3">${statusLabel}</span>${qrSection}${readySection}${waitingSection}${errorSection}<div class="mt-4"><button class="btn btn-outline-secondary btn-sm" type="button" onclick="location.reload()">Refresh</button></div></div></div></div></div></main><script>if (${JSON.stringify(waState)} !== 'READY') { setTimeout(function () { location.reload(); }, 5000); }</script></body></html>`);
+app.get('/', (_req, res) => {
+    res.status(200).type('text/plain').send(
+        'WhatsApp Gateway berjalan. Untuk QR, buka gateway_qr.php dari dashboard PHP; jangan mengekspos halaman QR gateway secara langsung.'
+    );
 });
 
-app.get('/status', (req, res) => {
+app.get('/qr', requireGatewayApiToken, (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.json({
+        success: true,
+        state: waState,
+        ready: waState === 'READY',
+        hasQr: Boolean(qrDataUrl),
+        qr: qrDataUrl,
+        error: lastError
+    });
+});
+
+app.get('/status', requireGatewayApiToken, (req, res) => {
     res.set('Cache-Control', 'no-store');
     res.json({
         success: true,
@@ -898,16 +992,92 @@ app.get('/status', (req, res) => {
     });
 });
 
-app.post('/send', async (req, res) => {
+app.get('/send-status/:requestId', requireGatewayApiToken, (req, res) => {
+    const requestId = String(req.params.requestId || '');
+    const job = deliveryJobs.get(requestId);
+    if (!job) {
+        return res.status(404).json({
+            success: false,
+            status: 'UNKNOWN',
+            message: 'Status permintaan tidak tersedia pada memori gateway.'
+        });
+    }
+
+    return res.json({
+        success: true,
+        request_id: job.requestId,
+        reminder_id: job.reminderId,
+        status: job.status,
+        ack: job.ack,
+        message_id: job.messageId,
+        error: job.error,
+        callback_delivered: Boolean(job.callbackDelivered),
+        created_at: job.createdAt,
+        updated_at: job.updatedAt || null
+    });
+});
+
+app.post('/send', requireGatewayApiToken, async (req, res) => {
     const phone = normalizePhone(req.body.phone);
     const doctorId = String(req.body.doctor_id || '').trim();
+    const reminderId = Number.parseInt(req.body.reminder_id, 10);
+    const requestId = String(req.body.request_id || '').trim().toLowerCase();
     const message = String(req.body.message || '').trim();
+
+    if (!WA_CALLBACK_URL || !WA_CALLBACK_TOKEN) {
+        return res.status(503).json({
+            success: false,
+            queued: false,
+            message: 'Delivery callback belum dikonfigurasi. Pengiriman dinonaktifkan agar status reminder tidak hilang.'
+        });
+    }
+
+    if (!Number.isSafeInteger(reminderId) || reminderId < 1 ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(requestId)) {
+        return res.status(422).json({
+            success: false,
+            queued: false,
+            message: 'ID reminder atau request ID tidak valid.'
+        });
+    }
+
+    // Idempotency: a repeated HTTP request with the same request_id never sends twice.
+    const existingJob = deliveryJobs.get(requestId);
+    if (existingJob) {
+        if (existingJob.reminderId !== reminderId) {
+            return res.status(409).json({
+                success: false,
+                queued: false,
+                message: 'Request ID sudah digunakan oleh reminder lain.'
+            });
+        }
+        return res.status(202).json({
+            success: true,
+            queued: existingJob.status === 'PROCESSING',
+            idempotent: true,
+            request_id: requestId,
+            reminder_id: reminderId,
+            status: existingJob.status
+        });
+    }
+
+    const activeRequestId = activeReminderSends.get(String(reminderId));
+    if (activeRequestId && activeRequestId !== requestId) {
+        return res.status(409).json({
+            success: false,
+            queued: false,
+            request_id: activeRequestId,
+            message: 'Reminder ini sedang diproses. Jangan mengirim ulang sebelum hasilnya diketahui.'
+        });
+    }
 
     terminalLog('PERMINTAAN KIRIM WHATSAPP', {
         Status: 'MEMULAI',
         DoctorId: doctorId || '-',
-        Tujuan: phone || '-',
-        PanjangPesan: message.length
+        ReminderId: reminderId,
+        Tujuan: maskPhone(phone),
+        PanjangPesan: message.length,
+        RequestId: requestId
     });
 
     if (waState !== 'READY') {
@@ -919,7 +1089,7 @@ app.post('/send', async (req, res) => {
         });
     }
 
-    if (!phone || !/^62\d{8,15}$/.test(phone)) {
+    if (!isValidIndonesianPhone(phone)) {
         return res.status(422).json({
             success: false,
             queued: false,
@@ -935,12 +1105,52 @@ app.post('/send', async (req, res) => {
         });
     }
 
+    if (activeGatewaySendRequest && activeGatewaySendRequest !== requestId) {
+        return res.status(409).json({
+            success: false,
+            queued: false,
+            request_id: activeGatewaySendRequest,
+            message: 'Gateway sedang memproses pesan lain. Tunggu hasilnya lalu coba lagi.'
+        });
+    }
+
+    const activeChatRequestId = activeChatSends.get(phone);
+    if (activeChatRequestId && activeChatRequestId !== requestId) {
+        return res.status(409).json({
+            success: false,
+            queued: false,
+            request_id: activeChatRequestId,
+            message: 'Sudah ada pengiriman aktif ke nomor ini. Tunggu hasilnya sebelum mencoba lagi.'
+        });
+    }
+
+    const job = {
+        requestId,
+        reminderId,
+        doctorId: doctorId || null,
+        phone,
+        status: 'PROCESSING',
+        createdAt: new Date().toISOString(),
+        updatedAt: null,
+        ack: null,
+        messageId: null,
+        error: null,
+        callbackDelivered: false
+    };
+    deliveryJobs.set(requestId, job);
+    activeReminderSends.set(String(reminderId), requestId);
+    activeChatSends.set(phone, requestId);
+    activeGatewaySendRequest = requestId;
+
     try {
         await repairWhatsAppWebCompatibility();
-
         const numberId = await client.getNumberId(phone);
 
         if (!numberId) {
+            await finishDelivery(requestId, {
+                status: 'FAILED',
+                error: 'Nomor tidak terdaftar di WhatsApp.'
+            });
             return res.status(404).json({
                 success: false,
                 queued: false,
@@ -948,173 +1158,139 @@ app.post('/send', async (req, res) => {
             });
         }
 
+        job.chatId = numberId._serialized;
+
         const ackWaiter = waitForOutgoingAck({
             chatId: numberId._serialized,
             phone,
             body: message
         });
+        // Attach a rejection handler immediately: sendMessage() can fail before the waiter is awaited.
+        ackWaiter.catch(() => {});
 
-        /**
-         * FIRE-AND-FORGET:
-         * Jangan menunggu sendMessage() selesai.
-         * Pada WhatsApp Web build tertentu, promise ini dapat memerlukan
-         * beberapa detik walaupun pesan sudah diproses oleh WA.
-         *
-         * message_ack tetap menjadi sumber konfirmasi background.
-         */
-        Promise.resolve()
-            .then(async () => {
-                let sendReturnedMessage = null;
-
-                try {
-                    sendReturnedMessage = await client.sendMessage(
-                        numberId._serialized,
-                        message,
-                        {
-                            ignoreQuoteErrors: true,
-                            sendSeen: false
-                        }
-                    );
-
-                    console.log(
-                        `[${now()}] sendMessage() selesai background. ReturnedMessage=${Boolean(sendReturnedMessage)} MessageId=${extractMessageId(sendReturnedMessage) || '-'} Ack=${sendReturnedMessage?.ack ?? '-'}`
-                    );
-                } catch (sendError) {
-                    console.error(
-                        'sendMessage() background error:',
-                        sendError.message || sendError
-                    );
-
-                    const tracker = Array.from(
-                        pendingOutgoingSends.values()
-                    ).find((item) =>
-                        item.chatId === numberId._serialized &&
-                        item.phone === phone &&
-                        item.body === message
-                    );
-
-                    if (tracker) {
-                        const current = clearOutgoingTracker(tracker.token);
-
-                        if (current) {
-                            current.reject(
-                                new Error(
-                                    sendError.message ||
-                                    'WhatsApp gagal memulai pengiriman.'
-                                )
-                            );
-                        }
-                    }
-
-                    return;
+        Promise.resolve().then(async () => {
+            let returnedMessage = null;
+            try {
+                returnedMessage = await client.sendMessage(
+                    numberId._serialized,
+                    message,
+                    { ignoreQuoteErrors: true, sendSeen: false }
+                );
+                console.log(
+                    `[${now()}] sendMessage() selesai; request_id=${requestId}; message_id=${extractMessageId(returnedMessage) || '-'}; ack=${returnedMessage?.ack ?? '-'}`
+                );
+            } catch (sendError) {
+                const tracker = Array.from(pendingOutgoingSends.values()).find((item) =>
+                    item.chatId === numberId._serialized &&
+                    item.phone === phone &&
+                    item.body === message
+                );
+                if (tracker) {
+                    clearOutgoingTracker(tracker.token);
+                    tracker.reject(sendError);
                 }
-
-                const directAck = Number(sendReturnedMessage?.ack || 0);
-
-                if (directAck >= 1) {
-                    clearOutgoingTrackersFor({
-                        chatId: numberId._serialized,
-                        phone,
-                        body: message
-                    });
-
-                    terminalLog('WHATSAPP BERHASIL DIKIRIM', {
-                        Status: 'BERHASIL',
-                        DoctorId: doctorId || '-',
-                        Tujuan: phone,
-                        MessageId:
-                            extractMessageId(sendReturnedMessage) ||
-                            `WA-${Date.now()}`,
-                        Ack: directAck,
-                        AckStatus:
-                            directAck >= 2
-                                ? 'DELIVERED'
-                                : 'SERVER_ACCEPTED'
-                    });
-
-                    return;
-                }
-
-                try {
-                    const ackResult = await ackWaiter;
-                    const ack = Number(ackResult.ack || 0);
-                    const messageId =
-                        ackResult.messageId ||
-                        extractMessageId(ackResult.message) ||
-                        extractMessageId(sendReturnedMessage) ||
-                        `WA-${Date.now()}`;
-
-                    if (ack >= 1) {
-                        terminalLog(
-                            'WHATSAPP TERKONFIRMASI VIA MESSAGE_ACK',
-                            {
-                                Status: 'TERKONFIRMASI',
-                                DoctorId: doctorId || '-',
-                                Tujuan: phone,
-                                MessageId: messageId,
-                                Ack: ack,
-                                AckStatus:
-                                    ackResult.ackLabel ||
-                                    (ack >= 2
-                                        ? 'DELIVERED'
-                                        : 'SERVER_ACCEPTED')
-                            }
-                        );
-
-                        return;
-                    }
-
-                    throw new Error(
-                        `Pesan ${messageId} tidak memperoleh ACK server WhatsApp.`
-                    );
-                } catch (ackError) {
-                    terminalLog('WHATSAPP GAGAL DIKIRIM', {
-                        Status: 'GAGAL_BACKGROUND',
-                        DoctorId: doctorId || '-',
-                        Tujuan: phone || '-',
-                        Alasan:
-                            ackError.message ||
-                            'ACK WhatsApp tidak diterima.'
-                    });
-                }
-            })
-            .catch((backgroundError) => {
-                terminalLog('WHATSAPP GAGAL DIKIRIM', {
-                    Status: 'GAGAL_BACKGROUND',
-                    DoctorId: doctorId || '-',
-                    Tujuan: phone || '-',
-                    Alasan:
-                        backgroundError.message ||
-                        'Pengiriman background gagal.'
+                // A send exception after invoking the library does not prove that no message went out.
+                await finishDelivery(requestId, {
+                    status: 'UNKNOWN',
+                    error: sendError.message || 'Hasil pengiriman tidak dapat dipastikan.'
                 });
-            });
+                return;
+            }
 
-        /**
-         * Respons HTTP langsung supaya tombol 1 nomor tidak menunggu
-         * sendMessage() yang lambat.
-         */
+            const directAck = Number(returnedMessage?.ack || 0);
+            const returnedMessageId = extractMessageId(returnedMessage);
+            if (directAck >= 1) {
+                clearOutgoingTrackersFor({
+                    chatId: numberId._serialized,
+                    phone,
+                    body: message
+                });
+                await finishDelivery(requestId, {
+                    status: 'SENT',
+                    ack: directAck,
+                    messageId: returnedMessageId
+                });
+                terminalLog('ACK WHATSAPP DITERIMA', {
+                    Status: 'SENT',
+                    ReminderId: reminderId,
+                    RequestId: requestId,
+                    MessageId: returnedMessageId || '-',
+                    Ack: directAck,
+                    AckStatus: ackLabel(directAck)
+                });
+                return;
+            }
+
+            try {
+                const ackResult = await ackWaiter;
+                const ack = Number(ackResult.ack || 0);
+                const messageId = ackResult.messageId || extractMessageId(ackResult.message);
+                if (ack >= 1) {
+                    await finishDelivery(requestId, {
+                        status: 'SENT',
+                        ack,
+                        messageId
+                    });
+                    terminalLog('ACK WHATSAPP DITERIMA', {
+                        Status: 'SENT',
+                        ReminderId: reminderId,
+                        RequestId: requestId,
+                        MessageId: messageId || '-',
+                        Ack: ack,
+                        AckStatus: ackResult.ackLabel || ackLabel(ack)
+                    });
+                } else {
+                    await finishDelivery(requestId, {
+                        status: 'UNKNOWN',
+                        error: 'ACK tidak memberikan bukti penerimaan yang memadai.'
+                    });
+                }
+            } catch (ackError) {
+                await finishDelivery(requestId, {
+                    status: 'UNKNOWN',
+                    error: ackError.message || 'ACK tidak diterima dalam batas waktu.'
+                });
+                terminalLog('STATUS PENGIRIMAN BELUM PASTI', {
+                    Status: 'UNKNOWN',
+                    ReminderId: reminderId,
+                    RequestId: requestId,
+                    Alasan: ackError.message || 'ACK tidak diterima.'
+                });
+            }
+        }).catch(async (backgroundError) => {
+            await finishDelivery(requestId, {
+                status: 'UNKNOWN',
+                error: backgroundError.message || 'Proses background gagal.'
+            });
+        });
+
         return res.status(202).json({
             success: true,
             queued: true,
-            message:
-                'Permintaan pengiriman WhatsApp sudah diteruskan ke gateway.',
-            phone,
-            doctorId
+            request_id: requestId,
+            reminder_id: reminderId,
+            status: 'PROCESSING',
+            message: 'Permintaan diterima. Status akhir akan diperbarui melalui callback.'
         });
     } catch (error) {
+        await finishDelivery(requestId, {
+            status: 'FAILED',
+            error: error.message || 'Gagal menyiapkan pengiriman WhatsApp.'
+        });
         terminalLog('WHATSAPP GAGAL MEMULAI KIRIM', {
-            Status: 'GAGAL',
-            DoctorId: doctorId || '-',
-            Tujuan: phone || '-',
+            Status: 'FAILED',
+            ReminderId: reminderId,
+            RequestId: requestId,
+            Tujuan: maskPhone(phone),
             Alasan: error.message || 'Gagal memulai pengiriman WhatsApp'
         });
-
         return res.status(500).json({
             success: false,
             queued: false,
-            message:
-                error.message ||
-                'Gagal memulai pengiriman WhatsApp.'
+            status: 'FAILED',
+            request_id: requestId,
+            reminder_id: reminderId,
+            message: 'Gateway gagal menyiapkan pengiriman WhatsApp.'
         });
     }
 });

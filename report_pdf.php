@@ -36,6 +36,8 @@ try {
         'PENDING',
         'READY',
         'OPENED',
+        'PROCESSING',
+        'UNKNOWN',
         'SENT',
         'FAILED'
     ];
@@ -101,6 +103,8 @@ try {
     $total = count($rows);
     $sent = 0;
     $ready = 0;
+    $processing = 0;
+    $unknown = 0;
     $failed = 0;
 
     foreach ($rows as $row) {
@@ -108,6 +112,10 @@ try {
             $sent++;
         } elseif ($row['status'] === 'READY') {
             $ready++;
+        } elseif ($row['status'] === 'PROCESSING') {
+            $processing++;
+        } elseif ($row['status'] === 'UNKNOWN') {
+            $unknown++;
         } elseif ($row['status'] === 'FAILED') {
             $failed++;
         }
@@ -175,7 +183,7 @@ try {
         }
 
         .summary td {
-            width: 25%;
+            width: 16.66%;
             border: 1px solid #d1d5db;
             padding: 7px 9px;
             text-align: center;
@@ -226,6 +234,8 @@ try {
             <td><div class="label">TOTAL</div><div class="value">' . $total . '</div></td>
             <td><div class="label">SENT</div><div class="value">' . $sent . '</div></td>
             <td><div class="label">READY</div><div class="value">' . $ready . '</div></td>
+            <td><div class="label">PROCESSING</div><div class="value">' . $processing . '</div></td>
+            <td><div class="label">UNKNOWN</div><div class="value">' . $unknown . '</div></td>
             <td><div class="label">FAILED</div><div class="value">' . $failed . '</div></td>
         </tr>
     </table>

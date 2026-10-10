@@ -7,7 +7,7 @@ const { ackLabel, normalizePhone, isValidIndonesianPhone, maskPhone, tokenEquals
 
 const app = express();
 const PORT = Number(process.env.WA_PORT || 3210);
-const HOST = process.env.WA_HOST || '0.0.0.0';
+const HOST = process.env.WA_HOST || '127.0.0.1';
 app.disable('x-powered-by');
 app.use(express.json({ limit: '128kb' }));
 
@@ -958,32 +958,23 @@ client.on('message_ack', (message, ack) => {
     }
 });
 
-app.get('/', (req, res) => {
-    const statusLabel = waState === 'READY'
-        ? 'WhatsApp Terhubung'
-        : waState === 'QR_READY'
-            ? 'Scan QR WhatsApp'
-            : 'Menyiapkan WhatsApp';
-
-    const qrSection = waState === 'QR_READY' && qrDataUrl
-        ? `<div class="mb-4"><img class="img-fluid border rounded-3 p-2 bg-white" src="${qrDataUrl}" alt="QR WhatsApp" width="240" height="240"></div><p class="text-secondary mb-0">Buka WhatsApp di HP, pilih Perangkat tertaut, lalu scan QR ini.</p>`
-        : '';
-
-    const readySection = waState === 'READY'
-        ? `<div class="display-3 text-success mb-3">✓</div><h2 class="h4 mb-2">WhatsApp siap digunakan</h2><p class="text-secondary mb-0">Dashboard PHP dapat mengirim pesan langsung melalui gateway ini.</p>`
-        : '';
-
-    const waitingSection = waState !== 'QR_READY' && waState !== 'READY'
-        ? `<h2 class="h4 mb-3">${statusLabel}</h2><p class="text-secondary mb-0">Status: <code>${waState}</code>. Halaman akan memperbarui otomatis.</p>`
-        : '';
-
-    const errorSection = lastError
-        ? `<div class="alert alert-danger mt-4 mb-0">${String(lastError).replace(/</g, '&lt;')}</div>`
-        : '';
-
-    res.send(`<!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>WhatsApp Gateway</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet"></head><body class="bg-body-tertiary"><main class="container py-5"><div class="row justify-content-center"><div class="col-12 col-md-8 col-lg-6"><div class="card shadow-sm border-0"><div class="card-body p-4 p-lg-5 text-center"><span class="badge text-bg-success-subtle text-success mb-3">${statusLabel}</span>${qrSection}${readySection}${waitingSection}${errorSection}<div class="mt-4"><button class="btn btn-outline-secondary btn-sm" type="button" onclick="location.reload()">Refresh</button></div></div></div></div></div></main><script>if (${JSON.stringify(waState)} !== 'READY') { setTimeout(function () { location.reload(); }, 5000); }</script></body></html>`);
+app.get('/', (_req, res) => {
+    res.status(200).type('text/plain').send(
+        'WhatsApp Gateway berjalan. Untuk QR, buka gateway_qr.php dari dashboard PHP; jangan mengekspos halaman QR gateway secara langsung.'
+    );
 });
 
+app.get('/qr', requireGatewayApiToken, (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.json({
+        success: true,
+        state: waState,
+        ready: waState === 'READY',
+        hasQr: Boolean(qrDataUrl),
+        qr: qrDataUrl,
+        error: lastError
+    });
+});
 
 app.get('/status', requireGatewayApiToken, (req, res) => {
     res.set('Cache-Control', 'no-store');

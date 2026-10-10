@@ -182,7 +182,7 @@ if ($method === 'GET' && $action === 'qr') {
 
 if ($method === 'GET' && $action === 'status') {
     $result = gatewayProxyRequest('GET', '/status');
-    if (isset($result['transport_error'])) {
+    if (isset($result['configuration_error']) || isset($result['transport_error'])) {
         gatewayProxyJson(503, [
             'success' => false,
             'ready' => false,
@@ -218,7 +218,8 @@ if ($method === 'GET' && $action === 'delivery') {
         $requestId = (string) ($row['gateway_request_id'] ?? '');
         if (in_array(strtoupper((string) $row['status']), ['PROCESSING', 'UNKNOWN'], true) && $requestId !== '') {
             $gatewayStatus = gatewayProxyRequest('GET', '/send-status/' . rawurlencode($requestId));
-            if (isset($gatewayStatus['json']['status']) &&
+            if (!isset($gatewayStatus['configuration_error']) && !isset($gatewayStatus['transport_error']) &&
+                isset($gatewayStatus['json']['status']) &&
                 in_array(strtoupper((string) $gatewayStatus['json']['status']), ['SENT', 'FAILED', 'UNKNOWN'], true)) {
                 persistGatewayDeliveryResult($pdo, $requestId, (array) $gatewayStatus['json']);
                 $statement->execute([$reminderId]);

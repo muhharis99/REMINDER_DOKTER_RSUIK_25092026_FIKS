@@ -293,28 +293,11 @@ try {
     $mpdf->Output($fileName, 'I');
     exit;
 } catch (Throwable $e) {
+    error_log('Report PDF gagal dibuat: ' . $e->getMessage() . ' (' . $e->getFile() . ':' . $e->getLine() . ')');
     http_response_code(500);
-
-    echo '<!doctype html>';
-    echo '<html lang="id">';
-    echo '<head>';
-    echo '<meta charset="utf-8">';
-    echo '<meta name="viewport" content="width=device-width, initial-scale=1">';
-    echo '<title>Error Report PDF</title>';
-    echo '<style>';
-    echo 'body{font-family:Arial,sans-serif;background:#f3f4f6;padding:30px;color:#1f2937;}';
-    echo '.box{max-width:900px;margin:auto;background:#fff;padding:24px;border-radius:10px;border:1px solid #e5e7eb;}';
-    echo 'h1{font-size:20px;margin-top:0;color:#b91c1c;}';
-    echo 'pre{white-space:pre-wrap;word-break:break-word;background:#f9fafb;padding:15px;border-radius:8px;}';
-    echo '</style>';
-    echo '</head>';
-    echo '<body>';
-    echo '<div class="box">';
+    echo '<!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Report PDF gagal</title></head>';
+    echo '<body style="font-family:Arial,sans-serif;padding:30px;color:#1f2937">';
     echo '<h1>Report PDF gagal dibuat</h1>';
-    echo '<pre>' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8') . '</pre>';
-    echo '<div>File: ' . htmlspecialchars($e->getFile(), ENT_QUOTES, 'UTF-8') . '</div>';
-    echo '<div>Line: ' . (int) $e->getLine() . '</div>';
-    echo '</div>';
-    echo '</body>';
-    echo '</html>';
+    echo '<p>Terjadi kesalahan saat membuat laporan. Periksa log aplikasi atau hubungi administrator.</p>';
+    echo '</body></html>';
 }

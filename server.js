@@ -25,6 +25,7 @@ let shutdownInProgress = false;
 const pendingOutgoingSends = new Map();
 const deliveryJobs = new Map();
 const activeReminderSends = new Map();
+const activeChatSends = new Map();
 
 const WA_API_TOKEN = String(process.env.WA_API_TOKEN || '').trim();
 const WA_CALLBACK_URL = String(process.env.WA_CALLBACK_URL || '').trim();
@@ -438,6 +439,9 @@ async function finishDelivery(requestId, result) {
 
     if (activeReminderSends.get(String(job.reminderId)) === requestId) {
         activeReminderSends.delete(String(job.reminderId));
+    }
+    if (job.phone && activeChatSends.get(String(job.phone)) === requestId) {
+        activeChatSends.delete(String(job.phone));
     }
 
     // Keep a bounded in-memory status window for polling if the PHP callback is late.
@@ -1127,7 +1131,7 @@ app.post('/send', requireGatewayApiToken, async (req, res) => {
         });
     }
 
-    if (!phone || !/^62\\d{8,15}$/.test(phone)) {
+    if (!phone || !/^62\d{8,15}$/.test(phone)) {
         return res.status(422).json({
             success: false,
             queued: false,
@@ -1143,11 +1147,42 @@ app.post('/send', requireGatewayApiToken, async (req, res) => {
         });
     }
 
+    const activeChatRequestId = activeChatSends.get(phone);
+    if (activeChatRequestId && activeChatRequestId !== requestId) {
+        return res.status(409).json({
+            success: false,
+            queued: false,
+            request_id: activeChatRequestId,
+            message: 'Sudah ada pengiriman aktif ke nomor ini. Tunggu hasilnya sebelum mencoba lagi.'
+        });
+    }
+
+    const job = {
+        requestId,
+        reminderId,
+        doctorId: doctorId || null,
+        phone,
+        status: 'PROCESSING',
+        createdAt: new Date().toISOString(),
+        updatedAt: null,
+        ack: null,
+        messageId: null,
+        error: null,
+        callbackDelivered: false
+    };
+    deliveryJobs.set(requestId, job);
+    activeReminderSends.set(String(reminderId), requestId);
+    activeChatSends.set(phone, requestId);
+
     try {
         await repairWhatsAppWebCompatibility();
         const numberId = await client.getNumberId(phone);
 
         if (!numberId) {
+            await finishDelivery(requestId, {
+                status: 'FAILED',
+                error: 'Nomor tidak terdaftar di WhatsApp.'
+            });
             return res.status(404).json({
                 success: false,
                 queued: false,
@@ -1155,20 +1190,7 @@ app.post('/send', requireGatewayApiToken, async (req, res) => {
             });
         }
 
-        const job = {
-            requestId,
-            reminderId,
-            doctorId: doctorId || null,
-            status: 'PROCESSING',
-            createdAt: new Date().toISOString(),
-            updatedAt: null,
-            ack: null,
-            messageId: null,
-            error: null,
-            callbackDelivered: false
-        };
-        deliveryJobs.set(requestId, job);
-        activeReminderSends.set(String(reminderId), requestId);
+        job.chatId = numberId._serialized;
 
         const ackWaiter = waitForOutgoingAck({
             chatId: numberId._serialized,
@@ -1283,6 +1305,10 @@ app.post('/send', requireGatewayApiToken, async (req, res) => {
             message: 'Permintaan diterima. Status akhir akan diperbarui melalui callback.'
         });
     } catch (error) {
+        await finishDelivery(requestId, {
+            status: 'FAILED',
+            error: error.message || 'Gagal menyiapkan pengiriman WhatsApp.'
+        });
         terminalLog('WHATSAPP GAGAL MEMULAI KIRIM', {
             Status: 'FAILED',
             ReminderId: reminderId,
@@ -1293,6 +1319,9 @@ app.post('/send', requireGatewayApiToken, async (req, res) => {
         return res.status(500).json({
             success: false,
             queued: false,
+            status: 'FAILED',
+            request_id: requestId,
+            reminder_id: reminderId,
             message: 'Gateway gagal menyiapkan pengiriman WhatsApp.'
         });
     }

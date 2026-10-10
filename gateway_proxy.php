@@ -68,14 +68,17 @@ function gatewayProxyRequest(string $method, string $path, ?array $payload = nul
 
     if (function_exists('curl_init')) {
         $curl = curl_init($url);
-        curl_setopt_array($curl, [
+        $curlOptions = [
             CURLOPT_CUSTOMREQUEST => $method,
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_HTTPHEADER => $headers,
             CURLOPT_CONNECTTIMEOUT => 3,
             CURLOPT_TIMEOUT => 45,
-            CURLOPT_POSTFIELDS => $body,
-        ]);
+        ];
+        if ($body !== null) {
+            $curlOptions[CURLOPT_POSTFIELDS] = $body;
+        }
+        curl_setopt_array($curl, $curlOptions);
         $raw = curl_exec($curl);
         $error = curl_error($curl);
         $status = (int) curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
@@ -85,16 +88,16 @@ function gatewayProxyRequest(string $method, string $path, ?array $payload = nul
             return ['transport_error' => $error !== '' ? $error : 'Gateway tidak dapat dihubungi.'];
         }
     } else {
-        $options = [
-            'http' => [
-                'method' => $method,
-                'header' => implode("\r\n", $headers),
-                'content' => $body ?? '',
-                'timeout' => 45,
-                'ignore_errors' => true,
-            ],
+        $httpOptions = [
+            'method' => $method,
+            'header' => implode("\r\n", $headers),
+            'timeout' => 45,
+            'ignore_errors' => true,
         ];
-        $context = stream_context_create($options);
+        if ($body !== null) {
+            $httpOptions['content'] = $body;
+        }
+        $context = stream_context_create(['http' => $httpOptions]);
         $raw = @file_get_contents($url, false, $context);
         $status = 0;
 

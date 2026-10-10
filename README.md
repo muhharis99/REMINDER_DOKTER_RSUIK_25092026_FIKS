@@ -16,12 +16,12 @@ npm install
 node server.js
 ```
 
-Gateway berjalan di port `3000`.
+Gateway berjalan di port `3210`.
 
 Buka browser:
 
 ```text
-http://localhost:3000
+http://localhost:3210
 ```
 
 Jika sesi WhatsApp belum tersedia, QR akan tampil di halaman tersebut. Scan menggunakan WhatsApp di HP melalui menu **Perangkat tertaut**. Session disimpan menggunakan `LocalAuth` pada folder `.wwebjs_auth`, sehingga normalnya QR cukup discan satu kali selama session tidak dihapus/logout.
@@ -29,7 +29,7 @@ Jika sesi WhatsApp belum tersedia, QR akan tampil di halaman tersebut. Scan meng
 Status gateway dapat dicek di:
 
 ```text
-http://localhost:3000/status
+http://localhost:3210/status
 ```
 
 ## 3. Jalankan aplikasi PHP
@@ -48,7 +48,7 @@ http://127.0.0.1:8000
 
 Jika menggunakan Apache/Laragon, buka URL project seperti biasa.
 
-Dashboard akan mengakses gateway pada port `3000` menggunakan hostname yang sama dengan halaman PHP. Jadi bila dashboard dibuka melalui `http://192.168.0.14/...`, gateway akan dipanggil melalui `http://192.168.0.14:3000`.
+Dashboard akan mengakses gateway pada port `3210` menggunakan hostname yang sama dengan halaman PHP. Jadi bila dashboard dibuka melalui `http://192.168.0.14/...`, gateway akan dipanggil melalui `http://192.168.0.14:3210`.
 
 ## Cara pengiriman
 

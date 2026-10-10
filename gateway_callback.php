@@ -20,7 +20,20 @@ if (strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET')) !== 'POST') {
 
 $config = $GLOBALS['wa_gateway'] ?? [];
 $expectedToken = trim((string) ($config['callback_token'] ?? ''));
-$authorization = (string) ($_SERVER['HTTP_AUTHORIZATION'] ?? '');
+$authorization = (string) (
+    $_SERVER['HTTP_AUTHORIZATION']
+    ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION']
+    ?? ''
+);
+if ($authorization === '' && function_exists('getallheaders')) {
+    $headers = getallheaders();
+    foreach ($headers as $headerName => $headerValue) {
+        if (strcasecmp((string) $headerName, 'Authorization') === 0) {
+            $authorization = (string) $headerValue;
+            break;
+        }
+    }
+}
 $suppliedToken = str_starts_with($authorization, 'Bearer ')
     ? trim(substr($authorization, 7))
     : '';

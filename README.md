@@ -18,13 +18,7 @@ node server.js
 
 Gateway berjalan di port `3210`.
 
-Buka browser:
-
-```text
-http://localhost:3210
-```
-
-Jika sesi WhatsApp belum tersedia, QR akan tampil di halaman tersebut. Scan menggunakan WhatsApp di HP melalui menu **Perangkat tertaut**. Session disimpan menggunakan `LocalAuth` pada folder `.wwebjs_auth`, sehingga normalnya QR cukup discan satu kali selama session tidak dihapus/logout.
+Gateway internal mendengarkan di `127.0.0.1:3210` secara default. **Jangan buka port Node untuk menampilkan QR langsung.** Setelah aplikasi PHP berjalan, buka dashboard dan tekan **Buka QR / Status** atau kunjungi `gateway_qr.php`. Halaman PHP tersebut mengambil QR terbaru melalui endpoint gateway yang terautentikasi. Pindai QR menggunakan WhatsApp di HP melalui menu **Perangkat tertaut**. Session disimpan menggunakan `LocalAuth` pada folder `.wwebjs_auth`; jangan menghapus folder ini kecuali memang ingin mengautentikasi ulang.
 
 Status gateway dapat dilihat dari dashboard PHP. Endpoint internal `/status` dan `/qr` sekarang membutuhkan token server-to-server dan secara default hanya didengarkan pada `127.0.0.1:3210`; jangan membukanya langsung ke jaringan publik.
 
@@ -55,14 +49,16 @@ Alur sekarang:
 3. Petugas menekan tombol **Kirim WhatsApp**.
 4. Browser melakukan `POST /send` ke service Node.js.
 5. `whatsapp-web.js` memeriksa nomor WhatsApp lalu menjalankan `client.sendMessage()`.
-6. Gateway mengembalikan `202 Accepted` ketika permintaan diterima untuk diproses di background. Respons `202` belum membuktikan pesan terkirim; ACK dicatat pada log gateway, tetapi hasil ACK belum otomatis memperbarui status reminder di database PHP.
-7. Jika gateway menolak permintaan sebelum mengirim, status dicatat `FAILED`; jika hasilnya tidak pasti atau callback hilang, status menjadi `UNKNOWN` dan tidak boleh dikirim ulang sebelum pemeriksaan manual.
+6. Gateway mengembalikan `202 Accepted` ketika permintaan mulai diproses. Status akhir dicatat ke database melalui callback terautentikasi dan rekonsiliasi polling. `SENT` berarti ada ACK server WhatsApp; itu bukan bukti pesan sudah sampai ke perangkat atau dibaca.
+7. Jika gateway memastikan permintaan gagal sebelum terkirim, status dicatat `FAILED`. Jika outcome tidak dapat dipastikan atau callback hilang, status menjadi `UNKNOWN`; jangan mengirim ulang sebelum memeriksa riwayat WhatsApp.
 
 Tidak ada lagi proses membuka WhatsApp Web dan menekan tombol Send secara manual.
 
 ## Database
 
 Database menggunakan MariaDB/MySQL melalui PDO. Konfigurasi koneksi berada di `config.php`.
+
+Untuk instalasi baru, `database/schema.sql` mendefinisikan `reminders.doctor_id` sebagai `VARCHAR(50)`, karena kode reminder menggunakan kode dokter eksternal (`dokter_kd`) dan bukan selalu ID integer dari tabel `doctors`.
 
 Buat database lokal dengan mengimpor:
 
@@ -120,6 +116,8 @@ database/migrations/20261010_add_reminder_delivery_tracking.sql
 ```
 
 Migrasi menambah status `PROCESSING` dan `UNKNOWN`, ID permintaan, ACK, serta kolom pelacakan. Migrasi tidak dijalankan otomatis oleh aplikasi. Jika tabel produksi berbeda dari skema yang didokumentasikan, sesuaikan migrasi terlebih dahulu; jangan jalankan langsung secara membabi buta. Simpan backup untuk pemulihan.
+
+**Peringatan kompatibilitas skema dokter:** instalasi lama dari versi `schema.sql` sebelumnya dapat memiliki `reminders.doctor_id INT UNSIGNED` dan foreign key `fk_reminder_doctor`. Kode aplikasi yang diaudit menyimpan kode dokter eksternal berbentuk string. Periksa `SHOW CREATE TABLE reminders;` dan `SHOW CREATE TABLE doctors;` terlebih dahulu. Hanya jika struktur benar-benar cocok dengan skema lama tersebut, tinjau `database/migrations/20261010_align_reminder_doctor_key.sql` sebagai migrasi terpisah. Migrasi itu mengubah tipe kunci tetapi tidak bisa secara otomatis memetakan ID dokter lokal ke `dokter_kd` eksternal; rekonsiliasi nilai `doctor_id` existing secara manual sebelum penggunaan produksi.
 
 Tambahkan cron rekonsiliasi setiap 5 menit (sesuaikan path PHP dan direktori instalasi):
 

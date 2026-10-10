@@ -25,7 +25,7 @@ let shutdownInProgress = false;
 const pendingOutgoingSends = new Map();
 const deliveryJobs = new Map();
 const activeReminderSends = new Map();
-const activeChatSends = new Map();
+const activeRecipientSends = new Map();
 let activeGatewaySendRequest = null;
 
 const WA_API_TOKEN = String(process.env.WA_API_TOKEN || '').trim();
@@ -404,8 +404,8 @@ async function finishDelivery(requestId, result) {
     if (activeReminderSends.get(String(job.reminderId)) === requestId) {
         activeReminderSends.delete(String(job.reminderId));
     }
-    if (job.phone && activeChatSends.get(String(job.phone)) === requestId) {
-        activeChatSends.delete(String(job.phone));
+    if (job.phone && activeRecipientSends.get(String(job.phone)) === requestId) {
+        activeRecipientSends.delete(String(job.phone));
     }
     if (activeGatewaySendRequest === requestId) {
         activeGatewaySendRequest = null;
@@ -1114,12 +1114,12 @@ app.post('/send', requireGatewayApiToken, async (req, res) => {
         });
     }
 
-    const activeChatRequestId = activeChatSends.get(phone);
-    if (activeChatRequestId && activeChatRequestId !== requestId) {
+    const activeRecipientRequestId = activeRecipientSends.get(phone);
+    if (activeRecipientRequestId && activeRecipientRequestId !== requestId) {
         return res.status(409).json({
             success: false,
             queued: false,
-            request_id: activeChatRequestId,
+            request_id: activeRecipientRequestId,
             message: 'Sudah ada pengiriman aktif ke nomor ini. Tunggu hasilnya sebelum mencoba lagi.'
         });
     }
@@ -1139,7 +1139,7 @@ app.post('/send', requireGatewayApiToken, async (req, res) => {
     };
     deliveryJobs.set(requestId, job);
     activeReminderSends.set(String(reminderId), requestId);
-    activeChatSends.set(phone, requestId);
+    activeRecipientSends.set(phone, requestId);
     activeGatewaySendRequest = requestId;
 
     try {

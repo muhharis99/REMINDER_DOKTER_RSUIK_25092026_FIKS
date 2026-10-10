@@ -18,15 +18,29 @@ function gatewayProxySameOrigin(): bool
 {
     $origin = trim((string) ($_SERVER['HTTP_ORIGIN'] ?? ''));
     if ($origin === '') {
+        // Permit non-browser clients only; browser JSON requests carry Origin.
         return true;
     }
 
-    $originHost = parse_url($origin, PHP_URL_HOST);
-    $requestHost = parse_url('http://' . (string) ($_SERVER['HTTP_HOST'] ?? ''), PHP_URL_HOST);
+    $originParts = parse_url($origin);
+    $requestHostParts = parse_url('//' . (string) ($_SERVER['HTTP_HOST'] ?? ''));
+    $requestScheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
 
-    return is_string($originHost) &&
-        is_string($requestHost) &&
-        strcasecmp($originHost, $requestHost) === 0;
+    if (!is_array($originParts) || !is_array($requestHostParts) ||
+        empty($originParts['scheme']) || empty($originParts['host']) || empty($requestHostParts['host'])) {
+        return false;
+    }
+
+    $originScheme = strtolower((string) $originParts['scheme']);
+    $originHost = strtolower((string) $originParts['host']);
+    $requestHost = strtolower((string) $requestHostParts['host']);
+    $originPort = (int) ($originParts['port'] ?? ($originScheme === 'https' ? 443 : 80));
+    $requestPort = (int) ($requestHostParts['port'] ?? ($requestScheme === 'https' ? 443 : 80));
+
+    return in_array($originScheme, ['http', 'https'], true) &&
+        $originScheme === $requestScheme &&
+        $originHost === $requestHost &&
+        $originPort === $requestPort;
 }
 
 function gatewayProxyRequest(string $method, string $path, ?array $payload = null): array

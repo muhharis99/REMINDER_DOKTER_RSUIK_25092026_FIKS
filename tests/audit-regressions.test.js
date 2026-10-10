@@ -150,3 +150,10 @@ test('callback supports forwarded Authorization headers without weakening token 
     assert.match(callback, /strcasecmp\(\(string\) \$headerName, 'Authorization'\)/);
     assert.match(callback, /hash_equals\(\$expectedToken, \$suppliedToken\)/);
 });
+
+test('gateway rejects concurrent sends because one WhatsApp client is shared', () => {
+    const server = read('server.js');
+    assert.match(server, /let activeGatewaySendRequest = null/);
+    assert.match(server, /Gateway sedang memproses pesan lain/);
+    assert.match(server, /if \(activeGatewaySendRequest === requestId\) \{\s*activeGatewaySendRequest = null;/);
+});
